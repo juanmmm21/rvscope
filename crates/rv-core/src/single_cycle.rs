@@ -1,0 +1,438 @@
+//! Procesador de un ciclo: cada ciclo lee, decodifica, ejecuta y retira una instrucción entera.
+//! Es la referencia arquitectónica con la que se comparan los modelos segmentados.
+
+use rv_asm::Program;
+use rv_isa::{Instruction, Reg};
+
+use crate::exec::{AluSource, Operation};
+use crate::map::MapError;
+use crate::memory::AccessKind;
+use crate::processor::{DataAccess, Halt, Processor, RegisterWrite, Retired, Stats, Trap};
+use crate::state::ArchState;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SingleCycle {
+    state: ArchState,
+    stats: Stats,
+    halt: Option<Halt>,
+}
+
+impl SingleCycle {
+    pub fn new(program: &Program) -> Result<SingleCycle, MapError> {
+        Ok(SingleCycle::from_state(ArchState::for_program(program)?))
+    }
+
+    /// Arranca desde un estado ya preparado (la CLI y los tests de conformidad lo usan).
+    pub fn from_state(state: ArchState) -> SingleCycle {
+        SingleCycle {
+            state,
+            stats: Stats::default(),
+            halt: None,
+        }
+    }
+
+    /// Ejecuta la instrucción de `pc`. Si algo falla, el estado no se toca: primero se calcula
+    /// todo y solo al final se escriben memoria, registro y `pc`.
+    fn execute(&mut self) -> Result<Retired, Trap> {
+        let state = &mut self.state;
+        let pc = state.pc;
+        let word = state.memory.fetch(pc)?;
+        let instruction = Instruction::decode(word)?;
+        let rs1 = state.registers.read(instruction.rs1);
+        let rs2 = state.registers.read(instruction.rs2);
+        let imm = instruction.imm as u32;
+        let link = pc.wrapping_add(4);
+
+        let mut next_pc = link;
+        let mut result: Option<u32> = None;
+        let mut data_access: Option<DataAccess> = None;
+
+        match Operation::of(instruction.mnemonic) {
+            Operation::Alu(op, source) => {
+                let operand = match source {
+                    AluSource::Register => rs2,
+                    AluSource::Immediate => imm,
+                };
+                result = Some(op.apply(rs1, operand));
+            }
+            Operation::Lui => result = Some(imm),
+            Operation::Auipc => result = Some(pc.wrapping_add(imm)),
+            Operation::Jal => {
+                next_pc = jump_target(pc.wrapping_add(imm))?;
+                result = Some(link);
+            }
+            Operation::Jalr => {
+                next_pc = jump_target(rs1.wrapping_add(imm) & !1)?;
+                result = Some(link);
+            }
+            Operation::Branch(cond) => {
+                if cond.taken(rs1, rs2) {
+                    next_pc = jump_target(pc.wrapping_add(imm))?;
+                }
+            }
+            Operation::Load(load) => {
+                let address = rs1.wrapping_add(imm);
+                let value = load.extend(state.memory.load(address, load.width)?);
+                result = Some(value);
+                data_access = Some(DataAccess {
+                    kind: AccessKind::Load,
+                    address,
+                    width: load.width,
+                    value,
+                });
+            }
+            Operation::Store(width) => {
+                let address = rs1.wrapping_add(imm);
+                state.memory.store(address, width, rs2)?;
+                data_access = Some(DataAccess {
+                    kind: AccessKind::Store,
+                    address,
+                    width,
+                    value: rs2,
+                });
+            }
+            // Con un solo hilo y sin cachés todavía, `fence` no tiene nada que ordenar.
+            Operation::Fence => {}
+            Operation::Ecall => return Err(Trap::EnvironmentCall),
+            Operation::Ebreak => return Err(Trap::Breakpoint),
+        }
+
+        let register_write =
+            result
+                .filter(|_| instruction.rd != Reg::ZERO)
+                .map(|value| RegisterWrite {
+                    reg: instruction.rd,
+                    value,
+                });
+        if let Some(write) = register_write {
+            state.registers.write(write.reg, write.value);
+        }
+        state.pc = next_pc;
+        Ok(Retired {
+            pc,
+            word,
+            instruction,
+            next_pc,
+            register_write,
+            data_access,
+        })
+    }
+}
+
+/// Sin la extensión C, saltar a una dirección que no es múltiplo de 4 es una excepción de la
+/// propia instrucción de salto, no de la búsqueda siguiente.
+fn jump_target(target: u32) -> Result<u32, Trap> {
+    if target % 4 == 0 {
+        Ok(target)
+    } else {
+        Err(Trap::MisalignedTarget { target })
+    }
+}
+
+impl Processor for SingleCycle {
+    fn name(&self) -> &'static str {
+        "Un ciclo"
+    }
+
+    fn state(&self) -> &ArchState {
+        &self.state
+    }
+
+    fn stats(&self) -> Stats {
+        self.stats
+    }
+
+    fn halt(&self) -> Option<Halt> {
+        self.halt
+    }
+
+    fn step(&mut self) -> Vec<Retired> {
+        if self.halt.is_some() {
+            return Vec::new();
+        }
+        let pc = self.state.pc;
+        match self.execute() {
+            Ok(retired) => {
+                self.stats.cycles += 1;
+                self.stats.retired += 1;
+                vec![retired]
+            }
+            Err(trap) => {
+                self.halt = Some(Halt { pc, trap });
+                Vec::new()
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::{MemoryError, Width};
+    use crate::processor::RunOutcome;
+    use rv_isa::DecodeError;
+
+    fn boot(source: &str) -> SingleCycle {
+        SingleCycle::new(&rv_asm::assemble(source).unwrap()).unwrap()
+    }
+
+    fn reg(name: &str) -> Reg {
+        Reg::parse(name).unwrap()
+    }
+
+    fn read(cpu: &SingleCycle, name: &str) -> u32 {
+        cpu.state().registers.read(reg(name))
+    }
+
+    /// Ejecuta hasta el primer `ebreak`, que marca el final en estos tests.
+    fn run(source: &str) -> SingleCycle {
+        let mut cpu = boot(source);
+        let outcome = cpu.run(10_000);
+        assert!(
+            matches!(
+                outcome,
+                RunOutcome::Halted(Halt {
+                    trap: Trap::Breakpoint,
+                    ..
+                })
+            ),
+            "{outcome:?}"
+        );
+        cpu
+    }
+
+    #[test]
+    fn arithmetic_and_immediates() {
+        let cpu = run("li a0, 0x12345678\n\
+             addi a1, a0, -0x678\n\
+             sub a2, zero, a0\n\
+             srai a3, a2, 4\n\
+             srli a4, a2, 28\n\
+             slti a5, a2, 0\n\
+             sltiu a6, a2, 1\n\
+             lui t0, 0xfffff\n\
+             xori t1, t0, -1\n\
+             ebreak\n");
+        assert_eq!(read(&cpu, "a0"), 0x1234_5678);
+        assert_eq!(read(&cpu, "a1"), 0x1234_5000);
+        assert_eq!(read(&cpu, "a2"), 0xedcb_a988);
+        assert_eq!(read(&cpu, "a3"), 0xfedc_ba98);
+        assert_eq!(read(&cpu, "a4"), 0xe);
+        assert_eq!(read(&cpu, "a5"), 1);
+        assert_eq!(read(&cpu, "a6"), 0);
+        assert_eq!(read(&cpu, "t0"), 0xffff_f000);
+        assert_eq!(read(&cpu, "t1"), 0x0000_0fff);
+    }
+
+    #[test]
+    fn writes_to_zero_are_discarded() {
+        let mut cpu = boot("addi zero, zero, 5\nebreak\n");
+        let retired = cpu.step();
+        assert_eq!(read(&cpu, "zero"), 0);
+        assert_eq!(retired[0].register_write, None);
+    }
+
+    #[test]
+    fn loads_and_stores_with_sign_extension() {
+        let cpu = run(".data\nv: .word 0x8081f0ff\n.text\n\
+             la t0, v\n\
+             lb a0, 0(t0)\n\
+             lbu a1, 0(t0)\n\
+             lh a2, 2(t0)\n\
+             lhu a3, 2(t0)\n\
+             lw a4, 0(t0)\n\
+             li t1, 0x11\n\
+             sb t1, 1(t0)\n\
+             sh t1, -4(sp)\n\
+             lw a5, 0(t0)\n\
+             lw a6, -4(sp)\n\
+             ebreak\n");
+        assert_eq!(read(&cpu, "a0"), 0xffff_ffff);
+        assert_eq!(read(&cpu, "a1"), 0xff);
+        assert_eq!(read(&cpu, "a2"), 0xffff_8081);
+        assert_eq!(read(&cpu, "a3"), 0x8081);
+        assert_eq!(read(&cpu, "a4"), 0x8081_f0ff);
+        assert_eq!(read(&cpu, "a5"), 0x8081_11ff);
+        assert_eq!(read(&cpu, "a6"), 0x11);
+    }
+
+    #[test]
+    fn retirement_records_what_changed() {
+        let mut cpu = boot("li t0, 7\nsw t0, -8(sp)\nlw t1, -8(sp)\nebreak\n");
+        let li = cpu.step()[0];
+        assert_eq!(
+            li.register_write,
+            Some(RegisterWrite {
+                reg: reg("t0"),
+                value: 7
+            })
+        );
+        assert_eq!((li.pc, li.next_pc), (0, 4));
+        let sw = cpu.step()[0];
+        assert_eq!(sw.register_write, None);
+        assert_eq!(
+            sw.data_access,
+            Some(DataAccess {
+                kind: AccessKind::Store,
+                address: 0x7fff_ffe8,
+                width: Width::Word,
+                value: 7
+            })
+        );
+        let lw = cpu.step()[0];
+        assert_eq!(
+            lw.data_access.map(|access| access.kind),
+            Some(AccessKind::Load)
+        );
+        assert_eq!(
+            cpu.stats(),
+            Stats {
+                cycles: 3,
+                retired: 3
+            }
+        );
+    }
+
+    #[test]
+    fn branches_and_loops() {
+        // Suma de 1 a 10 con un bucle y saltos con y sin signo.
+        let cpu = run("li t0, 10\nli a0, 0\n\
+             loop: add a0, a0, t0\n\
+             addi t0, t0, -1\n\
+             bnez t0, loop\n\
+             li t1, -1\n\
+             li a1, 0\n\
+             bltu t1, zero, skip\n\
+             li a1, 1\n\
+             skip: blt t1, zero, end\n\
+             li a1, 99\n\
+             end: ebreak\n");
+        assert_eq!(read(&cpu, "a0"), 55);
+        assert_eq!(read(&cpu, "a1"), 1);
+    }
+
+    #[test]
+    fn calls_link_and_return() {
+        let cpu = run("main: call f\n\
+             auipc a1, 0\n\
+             ebreak\n\
+             f: li a0, 42\n\
+             ret\n");
+        assert_eq!(read(&cpu, "a0"), 42);
+        // call = auipc + jalr (8 bytes): ra apunta a la instrucción siguiente.
+        assert_eq!(read(&cpu, "ra"), 8);
+        assert_eq!(read(&cpu, "a1"), 8);
+    }
+
+    #[test]
+    fn recursive_factorial_example() {
+        let source = include_str!("../../../examples/factorial.s");
+        let mut cpu = boot(source);
+        let outcome = cpu.run(10_000);
+        assert!(matches!(
+            outcome,
+            RunOutcome::Halted(Halt {
+                trap: Trap::EnvironmentCall,
+                ..
+            })
+        ));
+        assert_eq!(read(&cpu, "a0"), 720);
+        assert_eq!(read(&cpu, "sp"), crate::map::INITIAL_SP);
+    }
+
+    #[test]
+    fn faulting_instruction_leaves_state_untouched() {
+        let mut cpu = boot("li a0, 1\nlw a0, 2(sp)\nnop\n");
+        cpu.step();
+        let before = cpu.state().clone();
+        assert!(cpu.step().is_empty());
+        assert_eq!(cpu.state(), &before);
+        assert_eq!(
+            cpu.halt(),
+            Some(Halt {
+                pc: 4,
+                trap: Trap::Memory(MemoryError::Misaligned {
+                    address: 0x7fff_fff2,
+                    width: Width::Word,
+                    access: AccessKind::Load
+                })
+            })
+        );
+        assert!(cpu.step().is_empty());
+        assert_eq!(cpu.stats().retired, 1);
+    }
+
+    #[test]
+    fn running_off_the_end_of_the_code_stops() {
+        let mut cpu = boot("nop\n");
+        let outcome = cpu.run(10);
+        assert_eq!(
+            outcome,
+            RunOutcome::Halted(Halt {
+                pc: 4,
+                trap: Trap::Memory(MemoryError::Unmapped {
+                    address: 4,
+                    access: AccessKind::Fetch
+                })
+            })
+        );
+    }
+
+    #[test]
+    fn misaligned_jump_targets_trap_at_the_jump() {
+        let mut cpu = boot("li t0, 6\njalr ra, 0(t0)\nnop\nnop\n");
+        let outcome = cpu.run(10);
+        assert_eq!(
+            outcome,
+            RunOutcome::Halted(Halt {
+                pc: 4,
+                trap: Trap::MisalignedTarget { target: 6 }
+            })
+        );
+        assert_eq!(read(&cpu, "ra"), 0);
+        // jalr limpia el bit 0: saltar a 9 es saltar a 8.
+        let cpu = run("li t0, 9\njalr ra, 0(t0)\nebreak\n");
+        assert_eq!(read(&cpu, "ra"), 8);
+    }
+
+    #[test]
+    fn illegal_words_and_writes_to_code_stop_with_a_message() {
+        let mut cpu = boot(".word 0xffffffff\n");
+        cpu.run(1);
+        assert_eq!(
+            cpu.halt().map(|halt| halt.trap),
+            Some(Trap::Decode(DecodeError::Illegal(0xffff_ffff)))
+        );
+        let mut cpu = boot("sw zero, 0(zero)\n");
+        cpu.run(1);
+        let message = cpu.halt().map(|halt| halt.to_string());
+        assert_eq!(
+            message.as_deref(),
+            Some(
+                "0x00000000: no se puede escribir en 0x00000000: el segmento de texto no lo permite"
+            )
+        );
+    }
+
+    #[test]
+    fn infinite_loops_hit_the_cycle_limit() {
+        let mut cpu = boot("loop: j loop\n");
+        assert_eq!(cpu.run(1_000), RunOutcome::CycleLimit);
+        assert_eq!(cpu.stats().cycles, 1_000);
+    }
+
+    #[test]
+    fn execution_is_deterministic() {
+        let source = include_str!("../../../examples/factorial.s");
+        let mut first = boot(source);
+        let mut second = boot(source);
+        let mut trace_first = Vec::new();
+        let mut trace_second = Vec::new();
+        for _ in 0..200 {
+            trace_first.extend(first.step());
+            trace_second.extend(second.step());
+        }
+        assert_eq!(trace_first, trace_second);
+        assert_eq!(first, second);
+    }
+}

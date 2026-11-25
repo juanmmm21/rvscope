@@ -4,6 +4,7 @@ mod exec;
 mod map;
 mod memory;
 mod processor;
+mod single_cycle;
 mod state;
 
 pub use exec::{AluOp, AluSource, BranchCond, LoadOp, Operation};
@@ -13,4 +14,5 @@ pub use map::{
 };
 pub use memory::{AccessKind, Memory, MemoryError, Width};
 pub use processor::{DataAccess, Halt, Processor, RegisterWrite, Retired, RunOutcome, Stats, Trap};
+pub use single_cycle::SingleCycle;
 pub use state::{ArchState, Registers};
