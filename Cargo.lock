@@ -52,7 +52,9 @@ name = "rv-cli"
 version = "0.1.0"
 dependencies = [
  "rv-asm",
+ "rv-core",
  "rv-isa",
+ "thiserror",
 ]
 
 [[package]]
