@@ -60,6 +60,7 @@ impl Reg {
     pub const T0: Reg = Reg(5);
     pub const T1: Reg = Reg(6);
     pub const A0: Reg = Reg(10);
+    pub const A1: Reg = Reg(11);
     pub const A7: Reg = Reg(17);
 
     /// Registro con ese índice, si está entre 0 y 31.
