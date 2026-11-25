@@ -1,0 +1,14 @@
+[package]
+name = "rv-isa"
+description = "RISC-V instruction table, encoder and decoder for rvscope"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

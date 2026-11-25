@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = ["crates/rv-isa", "crates/rv-asm", "crates/rv-core", "crates/rv-wasm", "crates/rv-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/juanmmm21/rvscope"
+authors = ["juanmmm21"]
+rust-version = "1.85"
+
+[workspace.dependencies]
+rv-isa = { path = "crates/rv-isa" }
+rv-asm = { path = "crates/rv-asm" }
+rv-core = { path = "crates/rv-core" }
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
