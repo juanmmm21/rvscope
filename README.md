@@ -23,7 +23,7 @@ The ISA covered is RV32I plus the M extension (multiply and divide).
 
 1. **`rv-isa`** holds the instruction table: mnemonic, format, opcode/funct fields, operand shape, a one-line description and a pseudocode summary for each of the 48 RV32IM instructions, plus the pseudo-instruction list and the register file with its ABI calling convention.
 2. **`rv-asm`** reads the source line by line. The first pass places every statement in `.text` or `.data` and binds labels (a label on its own line attaches to the next item, after alignment). The second pass evaluates operands, expands pseudo-instructions, encodes them through `rv-isa` and builds a listing that maps every address back to its source line.
-3. **`rv-cli`** exposes the assembler from a terminal; **`rv-wasm`** exposes the core to the web app.
+3. **`rv-cli`** exposes the assembler and the single-cycle simulator from a terminal; **`rv-wasm`** exposes the core to the web app.
 
 ## Architecture
 
@@ -77,6 +77,23 @@ Errors are reported in the usual `file:line:column` form, all at once:
 bad.s:1:14: addi: el inmediato 9000 está fuera de rango (-2048 a 2047)
 bad.s:2:1: instrucción desconocida «bogus»
 ```
+
+Run a program on the single-cycle processor. What the program prints goes to stdout, what it reads (system calls 5, 8 and 12) comes from stdin, and the stop reason, the source line it happened on and the register file go to stderr, so redirecting stdout keeps only the program's own output:
+
+```bash
+cargo run -p rv-cli -- run examples/factorial.s
+```
+
+```text
+parada en la línea 10: 0x00000014: el programa terminó con código 0
+ciclos: 85  instrucciones: 85  pc: 0x00000018
+zero 0x00000000     ra 0x00000010     sp 0x7ffffff0     gp 0x00000000
+  tp 0x00000000     t0 0x00000001     t1 0x00000006     t2 0x00000000
+  s0 0x00000000     s1 0x00000000     a0 0x000002d0     a1 0x00000000
+...
+```
+
+`--trace` adds one line per retired instruction (cycle, address, word, source line, disassembly and what it changed), `--numeric` names registers `x0`–`x31`, and `--max-cycles <n>` caps the run (10 000 000 by default) so an infinite loop ends with a message instead of hanging. The process exit code is the one the program passed to its exit system call; a fault or an unfinished run exits with 1.
 
 List every supported instruction and pseudo-instruction, grouped:
 
