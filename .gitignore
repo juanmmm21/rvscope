@@ -31,3 +31,11 @@ coverage/
 AGENTS.md
 CLAUDE.md
 START_HERE.md
+
+# Compilación de Cargo y de wasm-pack
+/target/
+**/*.rs.bk
+pkg/
+
+# Notas internas de handoff (nunca en git)
+PROGRESS.md
