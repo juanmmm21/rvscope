@@ -13,6 +13,8 @@ name = "rvscope"
 path = "src/main.rs"
 
 [dependencies]
+rv-isa.workspace = true
+rv-asm.workspace = true
 
 [lints]
 workspace = true
