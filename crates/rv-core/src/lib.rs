@@ -6,6 +6,7 @@ mod memory;
 mod processor;
 mod single_cycle;
 mod state;
+mod syscall;
 
 pub use exec::{AluOp, AluSource, BranchCond, LoadOp, Operation};
 pub use map::{
@@ -16,3 +17,4 @@ pub use memory::{AccessKind, Memory, MemoryError, Width};
 pub use processor::{DataAccess, Halt, Processor, RegisterWrite, Retired, RunOutcome, Stats, Trap};
 pub use single_cycle::SingleCycle;
 pub use state::{ArchState, Registers};
+pub use syscall::{Console, EcallEffect, SYSCALLS, SyscallInfo, SyscallKind, ecall};

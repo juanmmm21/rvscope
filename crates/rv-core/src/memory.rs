@@ -171,7 +171,12 @@ impl Memory {
         }
     }
 
-    fn check(&self, address: u32, width: Width, access: AccessKind) -> Result<(), MemoryError> {
+    pub(crate) fn check(
+        &self,
+        address: u32,
+        width: Width,
+        access: AccessKind,
+    ) -> Result<(), MemoryError> {
         let size = width.bytes();
         if address % size != 0 {
             return Err(MemoryError::Misaligned {

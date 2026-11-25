@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use crate::map::MapError;
 use crate::memory::Memory;
+use crate::syscall::Console;
 
 /// Banco de 32 registros enteros; `x0` vale siempre cero.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -38,12 +39,14 @@ impl Registers {
     }
 }
 
-/// Estado que todos los modelos de procesador deben dejar igual al terminar un programa.
+/// Estado que todos los modelos de procesador deben dejar igual al terminar un programa. La
+/// consola cuenta: lo que un programa imprime también es observable.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArchState {
     pub pc: u32,
     pub registers: Registers,
     pub memory: Memory,
+    pub console: Console,
 }
 
 impl ArchState {
@@ -56,6 +59,7 @@ impl ArchState {
             pc: program.entry,
             registers,
             memory,
+            console: Console::new(),
         })
     }
 }

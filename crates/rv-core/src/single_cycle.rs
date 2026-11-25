@@ -9,12 +9,20 @@ use crate::map::MapError;
 use crate::memory::AccessKind;
 use crate::processor::{DataAccess, Halt, Processor, RegisterWrite, Retired, Stats, Trap};
 use crate::state::ArchState;
+use crate::syscall::{Console, EcallEffect, ecall};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SingleCycle {
     state: ArchState,
     stats: Stats,
     halt: Option<Halt>,
+    awaiting_input: bool,
+}
+
+/// Lo que deja un ciclo que no ha fallado.
+enum Executed {
+    Retired { retired: Retired, exit: Option<i32> },
+    AwaitingInput,
 }
 
 impl SingleCycle {
@@ -28,12 +36,13 @@ impl SingleCycle {
             state,
             stats: Stats::default(),
             halt: None,
+            awaiting_input: false,
         }
     }
 
     /// Ejecuta la instrucción de `pc`. Si algo falla, el estado no se toca: primero se calcula
     /// todo y solo al final se escriben memoria, registro y `pc`.
-    fn execute(&mut self) -> Result<Retired, Trap> {
+    fn execute(&mut self) -> Result<Executed, Trap> {
         let state = &mut self.state;
         let pc = state.pc;
         let word = state.memory.fetch(pc)?;
@@ -46,6 +55,8 @@ impl SingleCycle {
         let mut next_pc = link;
         let mut result: Option<u32> = None;
         let mut data_access: Option<DataAccess> = None;
+        let mut ecall_write: Option<RegisterWrite> = None;
+        let mut exit: Option<i32> = None;
 
         match Operation::of(instruction.mnemonic) {
             Operation::Alu(op, source) => {
@@ -93,7 +104,11 @@ impl SingleCycle {
             }
             // Con un solo hilo y sin cachés todavía, `fence` no tiene nada que ordenar.
             Operation::Fence => {}
-            Operation::Ecall => return Err(Trap::EnvironmentCall),
+            Operation::Ecall => match ecall(state)? {
+                EcallEffect::Continue { register_write } => ecall_write = register_write,
+                EcallEffect::Exit { code } => exit = Some(code),
+                EcallEffect::AwaitingInput => return Ok(Executed::AwaitingInput),
+            },
             Operation::Ebreak => return Err(Trap::Breakpoint),
         }
 
@@ -108,13 +123,16 @@ impl SingleCycle {
             state.registers.write(write.reg, write.value);
         }
         state.pc = next_pc;
-        Ok(Retired {
-            pc,
-            word,
-            instruction,
-            next_pc,
-            register_write,
-            data_access,
+        Ok(Executed::Retired {
+            retired: Retired {
+                pc,
+                word,
+                instruction,
+                next_pc,
+                register_write: register_write.or(ecall_write),
+                data_access,
+            },
+            exit,
         })
     }
 }
@@ -146,17 +164,34 @@ impl Processor for SingleCycle {
         self.halt
     }
 
+    fn console_mut(&mut self) -> &mut Console {
+        &mut self.state.console
+    }
+
+    fn awaiting_input(&self) -> bool {
+        self.awaiting_input
+    }
+
     fn step(&mut self) -> Vec<Retired> {
         if self.halt.is_some() {
             return Vec::new();
         }
         let pc = self.state.pc;
-        match self.execute() {
-            Ok(retired) => {
+        let executed = self.execute();
+        self.awaiting_input = matches!(executed, Ok(Executed::AwaitingInput));
+        match executed {
+            Ok(Executed::Retired { retired, exit }) => {
                 self.stats.cycles += 1;
                 self.stats.retired += 1;
+                if let Some(code) = exit {
+                    self.halt = Some(Halt {
+                        pc,
+                        trap: Trap::Exited { code },
+                    });
+                }
                 vec![retired]
             }
+            Ok(Executed::AwaitingInput) => Vec::new(),
             Err(trap) => {
                 self.halt = Some(Halt { pc, trap });
                 Vec::new()
@@ -332,7 +367,7 @@ mod tests {
         assert!(matches!(
             outcome,
             RunOutcome::Halted(Halt {
-                trap: Trap::EnvironmentCall,
+                trap: Trap::Exited { code: 0 },
                 ..
             })
         ));
@@ -419,6 +454,81 @@ mod tests {
         let mut cpu = boot("loop: j loop\n");
         assert_eq!(cpu.run(1_000), RunOutcome::CycleLimit);
         assert_eq!(cpu.stats().cycles, 1_000);
+    }
+
+    #[test]
+    fn exit_ecall_retires_and_stops() {
+        let mut cpu = boot("li a0, 3\nli a7, 93\necall\nnop\n");
+        let outcome = cpu.run(100);
+        assert_eq!(
+            outcome,
+            RunOutcome::Halted(Halt {
+                pc: 8,
+                trap: Trap::Exited { code: 3 }
+            })
+        );
+        assert_eq!(cpu.stats().retired, 3);
+        assert_eq!(cpu.state().pc, 12);
+        assert_eq!(
+            cpu.halt().map(|halt| halt.to_string()).as_deref(),
+            Some("0x00000008: el programa terminó con código 3")
+        );
+    }
+
+    const ECHO: &str = ".data\nprompt: .string \"n? \"\n.text\n\
+         la a0, prompt\nli a7, 4\necall\n\
+         li a7, 5\necall\n\
+         slli a0, a0, 1\nli a7, 1\necall\n\
+         li a0, 10\nli a7, 11\necall\n\
+         li a7, 10\necall\n";
+
+    #[test]
+    fn reading_waits_for_input_without_spending_cycles() {
+        let mut cpu = boot(ECHO);
+        assert_eq!(cpu.run(100), RunOutcome::AwaitingInput);
+        assert!(cpu.awaiting_input());
+        let waiting = cpu.clone();
+        assert_eq!(cpu.run(100), RunOutcome::AwaitingInput);
+        assert!(cpu.step().is_empty());
+        assert_eq!(cpu.stats(), waiting.stats());
+        assert_eq!(cpu.state(), waiting.state());
+
+        cpu.console_mut().push_input("21\n");
+        let read = cpu.step();
+        assert!(!cpu.awaiting_input());
+        assert_eq!(
+            read[0].register_write,
+            Some(RegisterWrite {
+                reg: Reg::A0,
+                value: 21
+            })
+        );
+        assert!(matches!(cpu.run(100), RunOutcome::Halted(_)));
+        assert_eq!(cpu.state().console.output_text(), "n? 42\n");
+
+        // Con la entrada dada desde el principio, la traza es la misma.
+        let mut eager = boot(ECHO);
+        eager.console_mut().push_input("21\n");
+        eager.run(100);
+        assert_eq!(eager.state(), cpu.state());
+        assert_eq!(eager.stats(), cpu.stats());
+    }
+
+    #[test]
+    fn bad_ecalls_stop_at_the_ecall() {
+        let mut cpu = boot("li a7, 7\necall\n");
+        assert_eq!(
+            cpu.run(10),
+            RunOutcome::Halted(Halt {
+                pc: 4,
+                trap: Trap::UnknownSyscall { number: 7 }
+            })
+        );
+        let mut cpu = boot("li a7, 5\necall\n");
+        cpu.console_mut().close_input();
+        cpu.run(10);
+        assert_eq!(cpu.halt().map(|halt| halt.trap), Some(Trap::EndOfInput));
+        assert_eq!(cpu.stats().retired, 1);
     }
 
     #[test]

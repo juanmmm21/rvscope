@@ -6,6 +6,7 @@ use thiserror::Error;
 
 use crate::memory::{AccessKind, MemoryError, Width};
 use crate::state::ArchState;
+use crate::syscall::Console;
 
 /// Motivo por el que el procesador se detiene. La instrucción que lo provoca no se retira:
 /// el estado queda como justo antes de ejecutarla.
@@ -18,8 +19,15 @@ pub enum Trap {
     Decode(#[from] DecodeError),
     #[error("salto a 0x{target:08x}: las instrucciones deben estar alineadas a 4 bytes")]
     MisalignedTarget { target: u32 },
-    #[error("llamada al sistema (ecall) sin atender")]
-    EnvironmentCall,
+    #[error("ecall: servicio {number} desconocido (mira el número que hay en a7)")]
+    UnknownSyscall { number: u32 },
+    #[error("ecall: lo leído no es un entero válido")]
+    InvalidInteger,
+    #[error("ecall: no queda entrada que leer")]
+    EndOfInput,
+    /// Fin normal del programa con una `ecall` de salida, que sí se retira.
+    #[error("el programa terminó con código {code}")]
+    Exited { code: i32 },
     #[error("punto de parada (ebreak)")]
     Breakpoint,
 }
@@ -73,6 +81,8 @@ pub enum RunOutcome {
     Halted(Halt),
     /// Se agotaron los ciclos pedidos sin pararse: un bucle infinito no cuelga la interfaz.
     CycleLimit,
+    /// Una `ecall` de lectura espera entrada; se sigue tras añadirla a la consola.
+    AwaitingInput,
 }
 
 /// Modelo de procesador. Todos comparten el mismo estado arquitectónico final para un mismo
@@ -86,6 +96,13 @@ pub trait Processor {
 
     fn halt(&self) -> Option<Halt>;
 
+    /// Consola del programa, para darle entrada (la salida se lee en `state().console`).
+    fn console_mut(&mut self) -> &mut Console;
+
+    /// Cierto si el último ciclo no avanzó porque una `ecall` espera entrada. Esos ciclos no
+    /// cuentan: la traza es la misma tarde lo que tarde en llegar la entrada.
+    fn awaiting_input(&self) -> bool;
+
     /// Avanza un ciclo de reloj y devuelve las instrucciones retiradas en él (ninguna, una o
     /// varias según el modelo). Una vez parado no hace nada.
     fn step(&mut self) -> Vec<Retired>;
@@ -97,6 +114,9 @@ pub trait Processor {
                 return RunOutcome::Halted(halt);
             }
             self.step();
+            if self.awaiting_input() {
+                return RunOutcome::AwaitingInput;
+            }
         }
         match self.halt() {
             Some(halt) => RunOutcome::Halted(halt),
