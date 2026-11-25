@@ -1,0 +1,73 @@
+@import '@fontsource/geist-sans/400.css';
+@import '@fontsource/geist-sans/500.css';
+@import '@fontsource/geist-mono/400.css';
+@import '@fontsource/geist-mono/500.css';
+
+/* Pinceladas del portfolio: dos fondos, un único acento y líneas finas. */
+:root {
+  --bg: #0a0b0c;
+  --fg: #e8e8e3;
+  --muted: #8b8d88;
+  --line: #25272a;
+  --accent: #c4f27e;
+  --danger: #ff8a7a;
+  --font-sans: 'Geist Sans', system-ui, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, monospace;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f1f1ec;
+    --fg: #16171a;
+    --muted: #5d5f5a;
+    --line: #d4d4cc;
+    --accent: #3a720a;
+    --danger: #a3271a;
+    color-scheme: light;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.topbar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.label {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.label[data-state='ready'] {
+  color: var(--accent);
+}
+
+.label[data-state='error'] {
+  color: var(--danger);
+}
