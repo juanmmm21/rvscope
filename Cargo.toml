@@ -13,7 +13,6 @@ rust-version = "1.85"
 [workspace.dependencies]
 rv-isa = { path = "crates/rv-isa" }
 rv-asm = { path = "crates/rv-asm" }
-rv-core = { path = "crates/rv-core" }
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 

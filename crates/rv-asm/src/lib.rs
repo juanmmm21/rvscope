@@ -1,1 +1,7 @@
-//! Ensamblador de RISC-V de rvscope.
+//! Ensamblador de RISC-V (RV32IM) de rvscope.
+
+#![allow(dead_code)]
+
+mod error;
+mod lexer;
+mod parser;

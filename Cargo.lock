@@ -41,10 +41,19 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 [[package]]
 name = "rv-asm"
 version = "0.1.0"
+dependencies = [
+ "rv-isa",
+ "serde",
+ "thiserror",
+]
 
 [[package]]
 name = "rv-cli"
 version = "0.1.0"
+dependencies = [
+ "rv-asm",
+ "rv-isa",
+]
 
 [[package]]
 name = "rv-core"
