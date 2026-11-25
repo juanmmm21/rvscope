@@ -9,6 +9,9 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+rv-asm.workspace = true
+serde.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

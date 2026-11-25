@@ -58,6 +58,11 @@ dependencies = [
 [[package]]
 name = "rv-core"
 version = "0.1.0"
+dependencies = [
+ "rv-asm",
+ "serde",
+ "thiserror",
+]
 
 [[package]]
 name = "rv-isa"
