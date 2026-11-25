@@ -9,6 +9,7 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+rv-isa.workspace = true
 rv-asm.workspace = true
 serde.workspace = true
 thiserror.workspace = true

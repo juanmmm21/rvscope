@@ -21,7 +21,7 @@ pub struct Instruction {
     pub imm: i32,
 }
 
-#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq, Serialize)]
 pub enum DecodeError {
     #[error("instrucción comprimida 0x{0:04x}: la extensión C no está admitida")]
     Compressed(u16),

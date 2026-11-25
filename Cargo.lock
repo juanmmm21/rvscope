@@ -60,6 +60,7 @@ name = "rv-core"
 version = "0.1.0"
 dependencies = [
  "rv-asm",
+ "rv-isa",
  "serde",
  "thiserror",
 ]
