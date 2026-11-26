@@ -4,7 +4,8 @@
 //! `scripts/vendor-riscv-tests.sh`, con un entorno propio que termina con la llamada al
 //! sistema de salida: código 0 si todos los casos pasan y el número del caso que falla si no.
 //! Cada modelo de procesador nuevo se añade a `MODELS` y tiene que pasar los mismos tests y
-//! acabar en el mismo estado que el de un ciclo.
+//! acabar en el mismo estado que el de un ciclo, retirando las mismas instrucciones en el mismo
+//! orden y con los mismos efectos.
 
 #![allow(clippy::unwrap_used)]
 
@@ -12,7 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use rv_asm::{Layout, Program, assemble_with};
-use rv_core::{ArchState, DualIssue, FiveStage, Hazards, Processor, RunOutcome, SingleCycle, Trap};
+use rv_core::{ArchState, DualIssue, FiveStage, Hazards, Processor, Retired, SingleCycle, Trap};
 
 /// El entorno oficial sitúa el código en 0x80000000; `auipc.S` depende de que una dirección
 /// 10000 bytes por debajo del código siga siendo válida.
@@ -54,23 +55,39 @@ fn sources(suite: &str) -> Vec<PathBuf> {
     files
 }
 
-/// Ejecuta un test en un modelo y devuelve su estado final, o por qué falló.
-fn run(path: &Path, factory: Factory) -> Result<ArchState, String> {
+/// Lo que un modelo deja al terminar un test: su estado y todo lo que ha retirado.
+#[derive(Debug)]
+struct Finished {
+    state: ArchState,
+    retired: Vec<Retired>,
+}
+
+/// Ejecuta un test en un modelo y devuelve cómo acaba, o por qué falló.
+fn run(path: &Path, factory: Factory) -> Result<Finished, String> {
     let source = fs::read_to_string(path).unwrap();
     let program = assemble_with(&source, LAYOUT).map_err(|errors| {
         let shown: Vec<String> = errors.iter().take(3).map(ToString::to_string).collect();
         format!("no ensambla: {}", shown.join(" | "))
     })?;
     let mut processor = factory(&program);
-    match processor.run(MAX_CYCLES) {
-        RunOutcome::Halted(halt) => match halt.trap {
-            Trap::Exited { code: 0 } => Ok(processor.state().clone()),
-            Trap::Exited { code } => Err(format!("falla el caso {code}")),
-            other => Err(format!("se para en 0x{:08x}: {other}", halt.pc)),
-        },
-        RunOutcome::CycleLimit => Err(format!("no termina en {MAX_CYCLES} ciclos")),
-        RunOutcome::AwaitingInput => Err("espera entrada".to_owned()),
+    let mut retired = Vec::new();
+    for _ in 0..MAX_CYCLES {
+        if let Some(halt) = processor.halt() {
+            return match halt.trap {
+                Trap::Exited { code: 0 } => Ok(Finished {
+                    state: processor.state().clone(),
+                    retired,
+                }),
+                Trap::Exited { code } => Err(format!("falla el caso {code}")),
+                other => Err(format!("se para en 0x{:08x}: {other}", halt.pc)),
+            };
+        }
+        retired.extend(processor.step());
+        if processor.awaiting_input() {
+            return Err("espera entrada".to_owned());
+        }
     }
+    Err(format!("no termina en {MAX_CYCLES} ciclos"))
 }
 
 fn check_suite(suite: &str, expected_tests: usize) {
@@ -83,12 +100,17 @@ fn check_suite(suite: &str, expected_tests: usize) {
     let mut failures = Vec::new();
     for path in &files {
         let name = path.file_stem().unwrap().to_string_lossy();
-        let mut reference: Option<ArchState> = None;
+        let mut reference: Option<Finished> = None;
         for (model, factory) in MODELS {
             match run(path, factory) {
-                Ok(state) => match &reference {
-                    None => reference = Some(state),
-                    Some(expected) if *expected != state => failures.push(format!(
+                Ok(finished) => match &reference {
+                    None => reference = Some(finished),
+                    Some(expected) if expected.retired != finished.retired => {
+                        failures.push(format!(
+                            "{suite}/{name} ({model}): retira algo distinto que el de un ciclo"
+                        ))
+                    }
+                    Some(expected) if expected.state != finished.state => failures.push(format!(
                         "{suite}/{name} ({model}): estado final distinto del de un ciclo"
                     )),
                     Some(_) => {}
