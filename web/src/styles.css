@@ -783,7 +783,8 @@ kbd {
   stroke-width: 1.4;
 }
 
-.dp-wire[data-wire='write_back'][data-active='true'] polyline {
+.dp-wire[data-wire='write_back'][data-active='true'] polyline,
+.dp-wire[data-wire='wb_write_back'][data-active='true'] polyline {
   stroke: var(--accent);
 }
 
@@ -835,7 +836,8 @@ kbd {
 }
 
 .dp-value[data-written='true'],
-.dp-wire[data-wire='write_back'] .dp-value {
+.dp-wire[data-wire='write_back'] .dp-value,
+.dp-wire[data-wire='wb_write_back'] .dp-value {
   fill: var(--accent);
 }
 
@@ -852,6 +854,32 @@ kbd {
 .dp-trap {
   font-size: 9.5px;
   fill: var(--muted);
+}
+
+/* Registros de segmentación: barras finas que separan las etapas. */
+.dp-latch {
+  fill: var(--surface);
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+
+.dp-pipeline {
+  min-width: 68rem;
+}
+
+.dp-stage-text {
+  font-size: 11px;
+  fill: var(--fg);
+}
+
+/* Lo retenido o vaciado se lee en apagado; la burbuja no tiene instrucción. */
+.dp-stage[data-condition='stalled'] .dp-stage-text,
+.dp-stage[data-condition='flushed'] .dp-stage-text {
+  fill: var(--muted);
+}
+
+.dp-stage[data-condition='flushed'] .dp-stage-text {
+  text-decoration: line-through;
 }
 
 .datapath-caption {
