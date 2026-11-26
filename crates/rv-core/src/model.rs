@@ -78,6 +78,11 @@ impl Model {
         self != Model::FiveStageNoHazards
     }
 
+    /// Cierto si EX recibe operandos adelantados desde EX/MEM y MEM/WB.
+    pub fn forwards(self) -> bool {
+        matches!(self, Model::FiveStageForwarding | Model::DualIssue)
+    }
+
     /// Procesador de este modelo con el programa cargado.
     pub fn boot(self, program: &Program) -> Result<Machine, MapError> {
         Ok(match self {
@@ -194,6 +199,26 @@ mod tests {
             assert_eq!(machine.name(), model.title());
             machine.run(100);
             assert!(machine.halt().is_some());
+        }
+    }
+
+    #[test]
+    fn only_forwarding_models_bypass_operands() {
+        // Dependencia directa: `add` necesita el `t0` que `addi` acaba de calcular.
+        let program = rv_asm::assemble("li t0, 5\nadd t1, t0, t0\nli a7, 10\necall\n").unwrap();
+        for model in Model::ALL {
+            let mut machine = model.boot(&program).unwrap();
+            let mut bypassed = false;
+            for _ in 0..30 {
+                machine.step();
+                bypassed |= machine.view().slots().any(|(_, _, slot)| {
+                    [slot.rs1, slot.rs2]
+                        .into_iter()
+                        .flatten()
+                        .any(|operand| operand.bypass.is_some())
+                });
+            }
+            assert_eq!(bypassed, model.forwards(), "{model:?}");
         }
     }
 }

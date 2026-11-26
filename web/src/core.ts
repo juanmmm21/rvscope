@@ -36,6 +36,7 @@ export interface ModelInfo {
   readonly title: string;
   readonly label: string;
   readonly equivalent: boolean;
+  readonly forwarding: boolean;
 }
 
 export interface RegisterInfo {

@@ -83,6 +83,8 @@ pub struct ModelInfo {
     pub label: &'static str,
     /// `false` en el modelo que no detecta riesgos: con dependencias da otro resultado.
     pub equivalent: bool,
+    /// Cierto si EX recibe operandos adelantados: la ruta de datos dibuja sus multiplexores.
+    pub forwarding: bool,
 }
 
 /// Qué pasó al pedir un paso.
@@ -419,6 +421,7 @@ impl Session {
                 title: model.title(),
                 label: model.label(),
                 equivalent: model.is_equivalent(),
+                forwarding: model.forwards(),
             })
             .collect()
     }
