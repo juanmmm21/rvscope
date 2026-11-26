@@ -20,6 +20,7 @@ The ISA covered is RV32I plus the M extension (multiply and divide).
 - **Bit-exact encoding and decoding** for every instruction format (R, I, S, B, U, J), checked with encode → decode → disassemble → re-assemble round trips over every instruction in the table.
 - **Error reporting built for an editor**: every error carries line, column and length, all errors in a file are reported at once, and a fuzz-style test throws thousands of garbage lines at the assembler to prove it never panics.
 - **Exact step back on every model**: the simulation session keeps a copy of the machine every N cycles and steps back by replaying deterministically from the nearest copy, instead of keeping an undo log per instruction. Copies are thinned out (every other one dropped, interval doubled) as a run grows, so memory stays bounded and stepping back never replays more than one interval. Console input is recorded with the cycle it arrived at, so rewinding past a read puts the text back in the input queue and running forward again reproduces the same output. Tests rewind every model cycle by cycle through a whole program and compare each state with a fresh run, including runs of tens of thousands of cycles.
+- **An editor that speaks the assembler's language**: the CodeMirror 6 editor highlights mnemonics, pseudo-instructions, directives, registers, labels and `%hi`/`%lo` from a vocabulary the wasm core exports (generated from the same tables the assembler uses, so it cannot drift), reassembles as you type, underlines each error at its exact column (character columns are converted to UTF-16 offsets, so accented comments do not shift the marks), and shows the address, machine code and real instructions of every source line in a column aligned with it, pseudo-instruction expansions included.
 - **A strict boundary between core and UI**: only one crate knows about `wasm-bindgen`, and it is a thin translation layer over a plain-Rust session (assemble, pick a model, step, step back, run with a cycle budget and breakpoints, feed console input, read memory by ranges, take a snapshot of registers, statistics and every pipeline stage with its disassembly and source line). Everything is tested natively and usable from the command line; the web app never reimplements processor logic.
 
 ## How it works
@@ -167,7 +168,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 
 cd web
-npm run wasm && npm run lint && npm run typecheck && npm run build
+npm run wasm && npm run lint && npm run typecheck && npm test && npm run build
 ```
 
 CI runs the same checks on every push to `main`.
