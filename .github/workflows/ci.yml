@@ -76,3 +76,10 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # Solo Chromium y sin dependencias del sistema extra: el ejecutor de Ubuntu ya las trae.
+      - name: Install Playwright browser
+        run: npx playwright install chromium --only-shell
+
+      - name: UI tests
+        run: npm run e2e

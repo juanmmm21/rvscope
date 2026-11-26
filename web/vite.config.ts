@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite';
 
 export default defineConfig({
@@ -7,5 +8,9 @@ export default defineConfig({
   server: {
     // Los ejemplos viven en ../examples, compartidos con los tests de Rust.
     fs: { allow: ['..'] },
+  },
+  test: {
+    // Los de e2e/ son de Playwright y corren contra la web compilada.
+    include: ['src/**/*.test.ts'],
   },
 });
