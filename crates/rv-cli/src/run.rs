@@ -244,7 +244,29 @@ fn write_summary(
         stats.retired,
         cpu.state().pc
     )?;
+    write_timing(cpu, report)?;
     write_registers(cpu, style, report)
+}
+
+/// CPI y, en los modelos segmentados, de dónde salen los ciclos de más. Qué contadores tienen
+/// sentido se sabe por la forma de la vista: varias etapas, una o dos vías.
+fn write_timing(cpu: &dyn Processor, report: &mut impl Write) -> io::Result<()> {
+    let stats = cpu.stats();
+    let mut line = match stats.cpi() {
+        Some(cpi) => format!("CPI: {cpi:.2}"),
+        None => "CPI: -".to_owned(),
+    };
+    let stages = &cpu.view().stages;
+    if stages.len() > 1 {
+        line.push_str(&format!(
+            "  burbujas: {}  vaciadas: {}",
+            stats.stalls, stats.flushed
+        ));
+    }
+    if stages.iter().any(|stage| stage.lanes.len() > 1) {
+        line.push_str(&format!("  ciclos con dos emitidas: {}", stats.dual_issues));
+    }
+    writeln!(report, "{line}")
 }
 
 /// Olvidar la `ecall` de salida es el despiste más común: el `pc` llega justo al final del

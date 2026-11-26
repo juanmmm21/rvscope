@@ -115,3 +115,17 @@ fn the_pipeline_without_hazard_detection_reads_stale_values() {
     let report = String::from_utf8_lossy(&pipelined.stderr);
     assert!(report.contains("instrucciones: 4"), "{report}");
 }
+
+#[test]
+fn the_report_explains_the_extra_cycles() {
+    let source = "li a0, 5\naddi a1, a0, 1\nli a7, 10\necall\n";
+    let single = rvscope_run("timing-single", source, "", &[]);
+    let report = String::from_utf8_lossy(&single.stderr);
+    assert!(report.contains("CPI: 1.00\n"), "{report}");
+    let stalling = rvscope_run("timing-stall", source, "", &["--cpu", "5-etapas-burbujas"]);
+    let report = String::from_utf8_lossy(&stalling.stderr);
+    assert!(report.contains("burbujas: 2  vaciadas: 0"), "{report}");
+    let dual = rvscope_run("timing-dual", source, "", &["--cpu", "2-vias"]);
+    let report = String::from_utf8_lossy(&dual.stderr);
+    assert!(report.contains("ciclos con dos emitidas: "), "{report}");
+}
