@@ -61,7 +61,8 @@ pub struct Control {
     pub operation: Operation,
     pub reads_rs1: bool,
     pub reads_rs2: bool,
-    /// Segundo operando de la ALU; `None` si la instrucción no la usa.
+    /// Segundo operando de la ALU; `None` si la instrucción no la usa (`lui` la usa: suma el
+    /// inmediato a 0).
     pub alu_source: Option<AluSource>,
     pub mem_read: bool,
     pub mem_write: bool,
@@ -91,14 +92,12 @@ impl Control {
         let alu_source = match operation {
             Operation::Alu(_, source) => Some(source),
             Operation::Branch(_) => Some(AluSource::Register),
-            Operation::Auipc | Operation::Jalr | Operation::Load(_) | Operation::Store(_) => {
-                Some(AluSource::Immediate)
-            }
             Operation::Lui
-            | Operation::Jal
-            | Operation::Fence
-            | Operation::Ecall
-            | Operation::Ebreak => None,
+            | Operation::Auipc
+            | Operation::Jalr
+            | Operation::Load(_)
+            | Operation::Store(_) => Some(AluSource::Immediate),
+            Operation::Jal | Operation::Fence | Operation::Ecall | Operation::Ebreak => None,
         };
         let write_source = match operation {
             Operation::Alu(..) | Operation::Lui | Operation::Auipc => Some(WriteSource::Alu),
@@ -351,7 +350,8 @@ mod tests {
         assert!(call.jump && !call.reads_rs1);
         assert_eq!(call.write_source, Some(WriteSource::Link));
         let lui = Control::of(&instruction("lui a0, 1"));
-        assert!(!lui.reads_rs1 && lui.alu_source.is_none());
+        assert!(!lui.reads_rs1);
+        assert_eq!(lui.alu_source, Some(AluSource::Immediate));
     }
 
     #[test]
