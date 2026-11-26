@@ -12,7 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use rv_asm::{Layout, Program, assemble_with};
-use rv_core::{ArchState, FiveStage, Hazards, Processor, RunOutcome, SingleCycle, Trap};
+use rv_core::{ArchState, DualIssue, FiveStage, Hazards, Processor, RunOutcome, SingleCycle, Trap};
 
 /// El entorno oficial sitúa el código en 0x80000000; `auipc.S` depende de que una dirección
 /// 10000 bytes por debajo del código siga siendo válida.
@@ -26,7 +26,7 @@ const MAX_CYCLES: u64 = 1_000_000;
 
 type Factory = fn(&Program) -> Box<dyn Processor>;
 
-const MODELS: [(&str, Factory); 3] = [
+const MODELS: [(&str, Factory); 4] = [
     ("un ciclo", |program| {
         Box::new(SingleCycle::new(program).unwrap())
     }),
@@ -35,6 +35,9 @@ const MODELS: [(&str, Factory); 3] = [
     }),
     ("5 etapas con forwarding", |program| {
         Box::new(FiveStage::new(program, Hazards::Forward).unwrap())
+    }),
+    ("doble emisión", |program| {
+        Box::new(DualIssue::new(program).unwrap())
     }),
 ];
 
