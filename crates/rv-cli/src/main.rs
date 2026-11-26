@@ -19,8 +19,10 @@ const USAGE: &str = "uso: rvscope <orden>
                     ejecuta el programa; lo que lee sale del stdin y lo que imprime va al
                     stdout; el motivo de la parada, los registros y la traza van al stderr
       --cpu <modelo>    un-ciclo (por defecto), 5-etapas-sin-riesgos (segmentado sin
-                        forwarding ni detección de riesgos: lee valores viejos) o
-                        5-etapas-burbujas (segmentado que espera con burbujas en ID)
+                        forwarding ni detección de riesgos: lee valores viejos),
+                        5-etapas-burbujas (segmentado que espera con burbujas en ID) o
+                        5-etapas-forwarding (adelanta resultados a EX; solo espera tras
+                        una carga)
       --trace           muestra cada instrucción retirada y lo que cambia
       --max-cycles <n>  tope de ciclos (por defecto 10000000)
       --numeric         registros como x0..x31 en vez de sus nombres del ABI
@@ -198,6 +200,8 @@ mod tests {
         assert_eq!(options.model, Model::FiveStageNoHazards);
         let (_, options) = parse_run_args(&["--cpu", "5-etapas-burbujas", "prog.s"]).unwrap();
         assert_eq!(options.model, Model::FiveStageStalls);
+        let (_, options) = parse_run_args(&["--cpu", "5-etapas-forwarding", "prog.s"]).unwrap();
+        assert_eq!(options.model, Model::FiveStageForwarding);
     }
 
     #[test]

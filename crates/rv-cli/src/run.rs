@@ -20,14 +20,16 @@ pub enum Model {
     SingleCycle,
     FiveStageNoHazards,
     FiveStageStalls,
+    FiveStageForwarding,
 }
 
 impl Model {
     /// Nombre de cada modelo en la línea de comandos, en el orden en que se listan.
-    pub const NAMES: [(&'static str, Model); 3] = [
+    pub const NAMES: [(&'static str, Model); 4] = [
         ("un-ciclo", Model::SingleCycle),
         ("5-etapas-sin-riesgos", Model::FiveStageNoHazards),
         ("5-etapas-burbujas", Model::FiveStageStalls),
+        ("5-etapas-forwarding", Model::FiveStageForwarding),
     ];
 
     pub fn parse(name: &str) -> Option<Model> {
@@ -42,6 +44,7 @@ impl Model {
             Model::SingleCycle => Box::new(SingleCycle::new(program)?),
             Model::FiveStageNoHazards => Box::new(FiveStage::new(program, Hazards::Ignore)?),
             Model::FiveStageStalls => Box::new(FiveStage::new(program, Hazards::Stall)?),
+            Model::FiveStageForwarding => Box::new(FiveStage::new(program, Hazards::Forward)?),
         })
     }
 }
