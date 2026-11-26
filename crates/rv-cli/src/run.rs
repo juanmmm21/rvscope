@@ -4,53 +4,12 @@
 use std::io::{self, BufRead, Write};
 
 use rv_asm::Program;
-use rv_core::{
-    AccessKind, DualIssue, FiveStage, Halt, Hazards, MapError, MemoryError, Processor, Retired,
-    SingleCycle, Stats, Trap,
-};
+use rv_core::{AccessKind, Halt, MapError, MemoryError, Model, Processor, Retired, Stats, Trap};
 use rv_isa::{Reg, RegisterStyle};
 
 /// Tope de ciclos por defecto: de sobra para los programas de clase y aun así un bucle
 /// infinito termina en pocos segundos.
 pub const DEFAULT_MAX_CYCLES: u64 = 10_000_000;
-
-/// Modelos de procesador que se pueden elegir con `--cpu`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Model {
-    SingleCycle,
-    FiveStageNoHazards,
-    FiveStageStalls,
-    FiveStageForwarding,
-    DualIssue,
-}
-
-impl Model {
-    /// Nombre de cada modelo en la línea de comandos, en el orden en que se listan.
-    pub const NAMES: [(&'static str, Model); 5] = [
-        ("un-ciclo", Model::SingleCycle),
-        ("5-etapas-sin-riesgos", Model::FiveStageNoHazards),
-        ("5-etapas-burbujas", Model::FiveStageStalls),
-        ("5-etapas-forwarding", Model::FiveStageForwarding),
-        ("2-vias", Model::DualIssue),
-    ];
-
-    pub fn parse(name: &str) -> Option<Model> {
-        Model::NAMES
-            .iter()
-            .find(|(candidate, _)| *candidate == name)
-            .map(|(_, model)| *model)
-    }
-
-    fn boot(self, program: &Program) -> Result<Box<dyn Processor>, MapError> {
-        Ok(match self {
-            Model::SingleCycle => Box::new(SingleCycle::new(program)?),
-            Model::FiveStageNoHazards => Box::new(FiveStage::new(program, Hazards::Ignore)?),
-            Model::FiveStageStalls => Box::new(FiveStage::new(program, Hazards::Stall)?),
-            Model::FiveStageForwarding => Box::new(FiveStage::new(program, Hazards::Forward)?),
-            Model::DualIssue => Box::new(DualIssue::new(program)?),
-        })
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RunOptions {
@@ -131,13 +90,13 @@ pub fn run_program(
                 write_trace_line(program, cpu.stats().cycles, entry, options.style, report)?;
             }
         }
-        printed = flush_output(cpu.as_ref(), printed, out)?;
+        printed = flush_output(&cpu, printed, out)?;
         if cpu.awaiting_input() {
-            feed_line(cpu.as_mut(), input)?;
+            feed_line(&mut cpu, input)?;
         }
     };
     out.flush()?;
-    write_summary(program, cpu.as_ref(), ending, options.style, report)?;
+    write_summary(program, &cpu, ending, options.style, report)?;
     Ok((ending, cpu.stats()))
 }
 

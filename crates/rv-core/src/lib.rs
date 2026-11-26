@@ -5,6 +5,7 @@ mod exec;
 mod five_stage;
 mod map;
 mod memory;
+mod model;
 mod pipeline;
 mod processor;
 mod single_cycle;
@@ -20,6 +21,7 @@ pub use map::{
     STACK_END, SegmentKind,
 };
 pub use memory::{AccessKind, Memory, MemoryError, Width};
+pub use model::{Machine, Model};
 pub use pipeline::Bypass;
 pub use processor::{DataAccess, Halt, Processor, RegisterWrite, Retired, RunOutcome, Stats, Trap};
 pub use single_cycle::SingleCycle;

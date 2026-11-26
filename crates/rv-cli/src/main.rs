@@ -9,7 +9,8 @@ use std::process::ExitCode;
 use rv_asm::{Program, assemble};
 use rv_isa::{Group, INSTRUCTIONS, PSEUDO_INSTRUCTIONS, RegisterStyle};
 
-use run::{Model, RunOptions, run_program};
+use run::{RunOptions, run_program};
+use rv_core::Model;
 
 const USAGE: &str = "uso: rvscope <orden>
 
@@ -92,8 +93,8 @@ fn parse_run_args<'a>(args: &[&'a str]) -> Result<(&'a str, RunOptions), String>
             "--numeric" => options.style = RegisterStyle::Numeric,
             "--cpu" => {
                 let name = rest.next().ok_or("--cpu necesita el nombre de un modelo")?;
-                options.model = Model::parse(name).ok_or_else(|| {
-                    let names: Vec<&str> = Model::NAMES.iter().map(|(name, _)| *name).collect();
+                options.model = Model::from_id(name).ok_or_else(|| {
+                    let names: Vec<&str> = Model::ALL.iter().map(|model| model.id()).collect();
                     format!(
                         "--cpu: no hay un modelo «{name}» (hay {})",
                         names.join(", ")
