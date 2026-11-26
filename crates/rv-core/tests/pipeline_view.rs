@@ -1,0 +1,278 @@
+//! La vista por etapa tiene que contar lo mismo que el procesador: lo que se retira aparece en
+//! la última etapa con lo que escribe, cada instrucción pasa una vez por EX con los operandos
+//! que usaría el de un ciclo (adelantados o no) y las estadísticas salen de lo que se ve.
+
+#![allow(clippy::unwrap_used)]
+
+use std::fs;
+use std::path::Path;
+
+use rv_asm::{Layout, Program, assemble, assemble_with};
+use rv_core::{
+    DualIssue, FiveStage, Hazards, PipelineView, Processor, SingleCycle, Slot, SlotState, Stage,
+    Trap,
+};
+
+type Factory = fn(&Program) -> Box<dyn Processor>;
+
+/// Modelos que acaban igual que el de un ciclo; el que ignora los riesgos se prueba aparte.
+const PIPELINED: [(&str, Factory); 3] = [
+    ("5 etapas con burbujas", |program| {
+        Box::new(FiveStage::new(program, Hazards::Stall).unwrap())
+    }),
+    ("5 etapas con forwarding", |program| {
+        Box::new(FiveStage::new(program, Hazards::Forward).unwrap())
+    }),
+    ("doble emisión", |program| {
+        Box::new(DualIssue::new(program).unwrap())
+    }),
+];
+
+const FACTORIAL: &str = include_str!("../../../examples/factorial.s");
+
+/// Carga-uso, forwarding de las dos distancias, almacenamientos con el dato adelantado, saltos
+/// hacia atrás y pares independientes para la doble emisión.
+const MIXED: &str = ".data\nv: .word 4, 8, 15, 16, 23, 42\n.text\n\
+     la t0, v\nli t1, 6\nli a0, 0\nli a1, 0\n\
+     loop: lw t2, 0(t0)\n\
+     add a0, a0, t2\n\
+     addi t0, t0, 4\naddi t1, t1, -1\n\
+     xor a1, a1, t2\nsw a0, -4(t0)\n\
+     bnez t1, loop\n\
+     slli a2, a0, 2\nsrai a3, a2, 1\n\
+     li a7, 93\necall\n";
+
+/// Ejecuta hasta pararse y devuelve, por ciclo, lo retirado y la vista.
+fn record(cpu: &mut dyn Processor) -> Vec<(Vec<rv_core::Retired>, PipelineView)> {
+    let mut cycles = Vec::new();
+    for _ in 0..100_000 {
+        if cpu.halt().is_some() {
+            return cycles;
+        }
+        let retired = cpu.step();
+        assert_eq!(cpu.view().cycle, cpu.stats().cycles);
+        cycles.push((retired, cpu.view().clone()));
+    }
+    panic!("{} no se ha parado", cpu.name());
+}
+
+fn last_stage(view: &PipelineView) -> Stage {
+    view.stages.last().unwrap().stage
+}
+
+/// `pc`, `rs1`, `rs2`, resultado, siguiente `pc` y dirección.
+type Execution = (
+    u32,
+    Option<u32>,
+    Option<u32>,
+    Option<u32>,
+    Option<u32>,
+    Option<u32>,
+);
+
+/// Lo que la etapa de ejecución hace con una instrucción; las cargas no tienen resultado en EX.
+fn execution(slot: &Slot) -> Execution {
+    let loads = slot.control.is_some_and(|control| control.mem_read);
+    (
+        slot.pc,
+        slot.rs1.map(|operand| operand.value),
+        slot.rs2.map(|operand| operand.value),
+        slot.result.filter(|_| !loads),
+        slot.next_pc,
+        slot.address,
+    )
+}
+
+/// Instrucciones por orden de paso por `stage` (vía 0 antes que la 1 en cada ciclo).
+fn through(cycles: &[(Vec<rv_core::Retired>, PipelineView)], stage: Stage) -> Vec<Execution> {
+    cycles
+        .iter()
+        .flat_map(|(_, view)| view.slots())
+        .filter(|(seen, _, slot)| *seen == stage && slot.state == SlotState::Active)
+        .map(|(_, _, slot)| execution(slot))
+        .collect()
+}
+
+fn check(name: &str, program: &Program, factory: Factory) {
+    let mut reference = SingleCycle::new(program).unwrap();
+    let reference_cycles = record(&mut reference);
+    let mut cpu = factory(program);
+    let cycles = record(cpu.as_mut());
+
+    // EX ve cada instrucción una vez, en orden y con los mismos operandos que el de un ciclo.
+    assert_eq!(
+        through(&cycles, Stage::Ex),
+        through(&reference_cycles, Stage::Single),
+        "{name}: lo que pasa por EX no cuadra con el de un ciclo"
+    );
+
+    let mut flushed = 0;
+    for (retired, view) in &cycles {
+        let stage = last_stage(view);
+        // Lo que se retira, incluida la `ecall` de salida, que además lleva la parada; no
+        // lo que falla ni lo descartado.
+        let shown: Vec<_> = view
+            .slots()
+            .filter(|(seen, _, slot)| {
+                *seen == stage
+                    && slot.state == SlotState::Active
+                    && slot
+                        .trap
+                        .is_none_or(|trap| matches!(trap, Trap::Exited { .. }))
+            })
+            .map(|(_, _, slot)| (slot.pc, slot.register_write, slot.data_access))
+            .collect();
+        let expected: Vec<_> = retired
+            .iter()
+            .map(|entry| (entry.pc, entry.register_write, entry.data_access))
+            .collect();
+        assert_eq!(
+            shown, expected,
+            "{name}: la última etapa no cuadra con lo retirado"
+        );
+        flushed += view
+            .slots()
+            .filter(|(seen, _, slot)| {
+                matches!(seen, Stage::If | Stage::Id) && slot.state == SlotState::Flushed
+            })
+            .count() as u64;
+    }
+    let stats = cpu.stats();
+    assert_eq!(stats.retired, reference.stats().retired, "{name}");
+    assert_eq!(stats.flushed, flushed, "{name}: vaciados");
+    assert_eq!(cpu.state(), reference.state(), "{name}");
+}
+
+#[test]
+fn the_view_matches_what_every_model_retires() {
+    for source in [FACTORIAL, MIXED] {
+        let program = assemble(source).unwrap();
+        for (name, factory) in PIPELINED {
+            check(name, &program, factory);
+        }
+    }
+}
+
+/// Con los riscv-tests, cada operando que EX enseña (adelantado o leído) es el correcto.
+#[test]
+fn the_view_matches_on_the_riscv_tests() {
+    let layout = Layout {
+        text_base: 0x8000_0000,
+        data_base: 0x1000_0000,
+    };
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/riscv-tests");
+    let mut checked = 0;
+    for suite in ["rv32ui", "rv32um"] {
+        let mut paths: Vec<_> = fs::read_dir(root.join(suite))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "s"))
+            .collect();
+        paths.sort();
+        for path in paths {
+            let program = assemble_with(&fs::read_to_string(&path).unwrap(), layout).unwrap();
+            for (name, factory) in PIPELINED {
+                check(&format!("{name} en {}", path.display()), &program, factory);
+            }
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 48);
+}
+
+#[test]
+fn stalls_in_five_stages_are_the_cycles_with_id_held() {
+    let program = assemble(MIXED).unwrap();
+    for hazards in [Hazards::Stall, Hazards::Forward] {
+        let mut cpu = FiveStage::new(&program, hazards).unwrap();
+        let cycles = record(&mut cpu);
+        let held = cycles
+            .iter()
+            .filter(|(_, view)| {
+                view.stage(Stage::Id)
+                    .and_then(|id| id.lanes[0])
+                    .is_some_and(|slot| slot.state == SlotState::Stalled)
+            })
+            .count() as u64;
+        assert!(held > 0);
+        assert_eq!(cpu.stats().stalls, held);
+    }
+}
+
+#[test]
+fn forwarding_shows_where_each_operand_came_from() {
+    let program = assemble("li a0, 5\naddi a1, a0, 1\nadd a2, a0, a1\nli a7, 10\necall\n").unwrap();
+    let mut cpu = FiveStage::new(&program, Hazards::Forward).unwrap();
+    let cycles = record(&mut cpu);
+    let operands: Vec<_> = cycles
+        .iter()
+        .filter_map(|(_, view)| view.stage(Stage::Ex).and_then(|ex| ex.lanes[0]))
+        .filter(|slot| slot.pc == 4 || slot.pc == 8)
+        .map(|slot| {
+            (
+                slot.rs1.map(|operand| (operand.value, operand.bypass)),
+                slot.rs2.map(|operand| (operand.value, operand.bypass)),
+            )
+        })
+        .collect();
+    use rv_core::Bypass::{ExMem, MemWb};
+    assert_eq!(
+        operands,
+        [
+            (Some((5, Some(ExMem))), None),
+            (Some((5, Some(MemWb))), Some((6, Some(ExMem)))),
+        ]
+    );
+}
+
+#[test]
+fn the_dual_issue_view_has_two_lanes_and_counts_pairs() {
+    let program = assemble(MIXED).unwrap();
+    let mut cpu = DualIssue::new(&program).unwrap();
+    let cycles = record(&mut cpu);
+    let pairs = cycles
+        .iter()
+        .filter(|(_, view)| {
+            let ex = view.stage(Stage::Ex).unwrap();
+            ex.lanes.len() == 2 && ex.lanes.iter().all(Option::is_some)
+        })
+        .count() as u64;
+    assert!(pairs > 0);
+    assert_eq!(cpu.stats().dual_issues, pairs);
+    let stats = cpu.stats();
+    assert_eq!(
+        stats.cpi(),
+        Some(stats.cycles as f64 / stats.retired as f64)
+    );
+    assert!(stats.cpi().unwrap() < 1.5);
+}
+
+#[test]
+fn the_same_program_gives_the_same_views() {
+    let program = assemble(FACTORIAL).unwrap();
+    for (name, factory) in PIPELINED {
+        let first = record(factory(&program).as_mut());
+        let second = record(factory(&program).as_mut());
+        assert_eq!(first, second, "{name}");
+    }
+}
+
+#[test]
+fn a_fault_leaves_only_the_faulting_instruction_in_view() {
+    let program = assemble("li a0, 1\nsw a0, 0(zero)\nli a7, 10\necall\n").unwrap();
+    for (name, factory) in PIPELINED {
+        let mut cpu = factory(&program);
+        record(cpu.as_mut());
+        let halt = cpu.halt().unwrap();
+        let shown: Vec<_> = cpu.view().slots().collect();
+        assert_eq!(shown.len(), 1, "{name}");
+        let (stage, _, slot) = shown[0];
+        assert_eq!(stage, Stage::Wb, "{name}");
+        assert_eq!((slot.pc, slot.trap), (4, Some(halt.trap)), "{name}");
+    }
+    let mut cpu = SingleCycle::new(&program).unwrap();
+    record(&mut cpu);
+    let slot = cpu.view().stages[0].lanes[0].unwrap();
+    assert_eq!(slot.pc, 4);
+    assert!(slot.trap.is_some() && slot.instruction.is_some());
+}
