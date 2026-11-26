@@ -259,3 +259,69 @@ test('ir a una etiqueta, cambiar de unidad y de página', async ({ page }) => {
   await expect(status).toContainText('Texto · 0x00000000');
   await expect(memoryCell(page, 0x00000000)).toHaveText('17');
 });
+
+test('cambiar de procesador conserva programa y puntos de parada', async ({ page }) => {
+  await open(page);
+  await setSpeed(page, 8);
+  const status = page.locator('#run-status');
+  const model = page.locator('#model');
+  const note = page.locator('#model-note');
+  const a0 = register(page, 'a0').locator('.register-value');
+  await expect(model).toHaveValue('un-ciclo');
+  await expect(note).toHaveAttribute('data-warning', 'false');
+
+  // Mismo factorial, mismo resultado y distinto número de ciclos en cada modelo equivalente.
+  const expected: readonly [string, string][] = [
+    ['un-ciclo', 'ciclo 85 · 85 instrucciones · CPI 1.00'],
+    ['5-etapas-burbujas', 'ciclo 179 · 85 instrucciones · CPI 2.11 · 54 burbujas · 36 vaciadas'],
+    ['5-etapas-forwarding', 'ciclo 130 · 85 instrucciones · CPI 1.53 · 5 burbujas · 36 vaciadas'],
+    ['2-vias', 'ciclo 112 · 85 instrucciones · CPI 1.32 · 10 burbujas · 30 vaciadas · 23 pares'],
+  ];
+  for (const [id, counters] of expected) {
+    await model.selectOption(id);
+    await expect(status).toContainText('listo · ciclo 0');
+    await page.locator('#run').click();
+    await expect(status).toHaveText(`terminado con código 0 · ${counters}`);
+    await expect(a0).toHaveText('0x000002d0');
+  }
+
+  // Sin detección de riesgos el factorial da otra cosa, y la nota lo avisa.
+  await model.selectOption('5-etapas-sin-riesgos');
+  await expect(note).toHaveAttribute('data-warning', 'true');
+  await expect(note).toContainText('valor viejo');
+  await page.locator('#run').click();
+  await expect(status).toContainText('terminado con código 0 · ciclo 10 ·');
+  await expect(a0).not.toHaveText('0x000002d0');
+
+  // Un punto de parada puesto antes de cambiar sigue parando en el modelo nuevo.
+  await page
+    .locator('.cm-line')
+    .nth(MUL_LINE - 1)
+    .click();
+  await page.keyboard.press('F9');
+  await model.selectOption('5-etapas-forwarding');
+  await expect(breakpoints(page)).toHaveCount(1);
+  await page.locator('#run').click();
+  await expect(status).toContainText(`punto de parada · línea ${String(MUL_LINE)}`);
+  await expect(page.locator('.cm-exec-line')).toContainText('mul');
+});
+
+test('el procesador elegido se recuerda al volver', async ({ page }) => {
+  await open(page);
+  await page.locator('#model').selectOption('2-vias');
+  await page.reload();
+  await expect(page.locator('#assembly-status')).toContainText('ensamblado');
+  await expect(page.locator('#model')).toHaveValue('2-vias');
+  await page.locator('#step').click();
+  await expect(page.locator('#run-status')).toContainText('0 pares');
+});
+
+test('la consola se vacía al reensamblar', async ({ page }) => {
+  await open(page);
+  await setSource(page, ['li a0, 7', 'li a7, 1', 'ecall', 'li a7, 10', 'ecall'].join('\n'));
+  await setSpeed(page, 8);
+  await page.locator('#run').click();
+  await expect(page.locator('#console-output')).toHaveText('7');
+  await page.locator('#assemble').click();
+  await expect(page.locator('#console-output')).toHaveText('');
+});
