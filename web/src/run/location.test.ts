@@ -26,6 +26,7 @@ function slot(pc: number, line: number | null): Slot {
     data_access: null,
     register_write: null,
     trap: null,
+    wires: null,
   };
 }
 

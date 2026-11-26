@@ -38,6 +38,7 @@ function slot(access: DataAccess | null, state: Slot['state'] = 'active'): Slot 
     data_access: access,
     register_write: null,
     trap: null,
+    wires: null,
   };
 }
 

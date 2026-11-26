@@ -115,6 +115,52 @@ export interface Control {
   readonly write_source: 'alu' | 'memory' | 'link' | null;
 }
 
+export type AluFunction =
+  | 'add'
+  | 'sub'
+  | 'sll'
+  | 'slt'
+  | 'sltu'
+  | 'xor'
+  | 'srl'
+  | 'sra'
+  | 'or'
+  | 'and'
+  | 'mul'
+  | 'mulh'
+  | 'mulhsu'
+  | 'mulhu'
+  | 'div'
+  | 'divu'
+  | 'rem'
+  | 'remu'
+  | 'eq'
+  | 'ne'
+  | 'lt'
+  | 'ge'
+  | 'ltu'
+  | 'geu';
+
+// Entradas y salida de la ALU; en una comparación (`eq`…`geu`), `out` es 1 si se salta.
+export interface AluWires {
+  readonly function: AluFunction;
+  readonly a_source: 'register' | 'pc' | 'zero';
+  readonly b_source: 'register' | 'immediate';
+  readonly a: number;
+  readonly b: number;
+  readonly out: number;
+}
+
+// Valores de los cables de la ruta de datos (`rv_core::Wires`); lo que depende de la ejecución
+// es `null` hasta que la instrucción pasa por la ALU.
+export interface Wires {
+  readonly pc_plus_4: number;
+  readonly immediate: number | null;
+  readonly alu: AluWires | null;
+  readonly target: number | null;
+  readonly pc_source: 'sequential' | 'target' | 'alu' | null;
+}
+
 export interface Slot {
   readonly pc: number;
   readonly word: number | null;
@@ -130,6 +176,7 @@ export interface Slot {
   readonly data_access: DataAccess | null;
   readonly register_write: RegisterWrite | null;
   readonly trap: string | null;
+  readonly wires: Wires | null;
 }
 
 export interface StageSnapshot {
