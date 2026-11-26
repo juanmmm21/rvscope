@@ -6,14 +6,16 @@
 //! reglas de temporización y de paradas están en el ADR 0002.
 
 use rv_asm::Program;
-use rv_isa::{Instruction, Reg};
-use serde::Serialize;
+use rv_isa::Reg;
 
-use crate::exec::{Operation, access_memory, execute};
+use crate::exec::execute;
 use crate::map::MapError;
-use crate::processor::{DataAccess, Halt, Processor, RegisterWrite, Retired, Stats, Trap};
+use crate::pipeline::{
+    Bypass, Fetched, Latch, Uop, WriteBack, decode, fetch, memory_stage, write_back,
+};
+use crate::processor::{Halt, Processor, Retired, Stats, Trap};
 use crate::state::ArchState;
-use crate::syscall::{Console, EcallEffect, ecall};
+use crate::syscall::Console;
 
 /// Unidad de riesgos de datos: lo único que cambia entre los modelos de cinco etapas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,95 +28,6 @@ pub enum Hazards {
     /// Forwarding hacia EX desde EX/MEM y MEM/WB más detección de carga-uso: solo una carga en
     /// EX seguida de quien lee su destino en ID mete una burbuja.
     Forward,
-}
-
-/// Registro de segmentación del que EX ha tomado un operando en vez del valor leído en ID.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-pub enum Bypass {
-    /// Resultado de la ALU de la instrucción de justo delante, que ahora está en MEM.
-    ExMem,
-    /// Lo que escribe la de dos por delante, que ahora está en WB: su resultado o lo cargado.
-    MemWb,
-}
-
-/// Registro de segmentación entre dos etapas: vacío (burbuja), con una instrucción o con una
-/// instrucción que ya ha fallado y viaja hasta WB para parar allí.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Latch<T> {
-    Bubble,
-    Holds(T),
-    Fault(Halt),
-}
-
-/// IF/ID: la palabra buscada, sin decodificar.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Fetched {
-    pc: u32,
-    word: u32,
-}
-
-/// Instrucción decodificada que avanza por ID/EX, EX/MEM y MEM/WB. Cada etapa rellena lo suyo:
-/// ID los operandos, EX `next_pc`, el resultado y la dirección, y MEM el valor cargado.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Uop {
-    pc: u32,
-    word: u32,
-    instruction: Instruction,
-    operation: Operation,
-    rs1: u32,
-    rs2: u32,
-    next_pc: u32,
-    result: Option<u32>,
-    address: Option<u32>,
-    data_access: Option<DataAccess>,
-}
-
-impl Latch<Uop> {
-    /// Lo que impide buscar instrucciones nuevas: una excepción o una `ecall` en vuelo.
-    fn blocks_fetch(&self) -> bool {
-        match self {
-            Latch::Bubble => false,
-            Latch::Fault(_) => true,
-            Latch::Holds(uop) => uop.operation == Operation::Ecall,
-        }
-    }
-
-    fn pc(&self) -> Option<u32> {
-        match self {
-            Latch::Bubble => None,
-            Latch::Fault(halt) => Some(halt.pc),
-            Latch::Holds(uop) => Some(uop.pc),
-        }
-    }
-
-    /// Registro que escribirá en WB lo que lleva este registro de segmentación, si escribe
-    /// alguno distinto de `x0`. La `ecall` no cuenta: nada se busca detrás de ella hasta que
-    /// se retira, así que nunca hay nadie esperando su resultado en ID.
-    fn destination(&self) -> Option<Reg> {
-        let Latch::Holds(uop) = self else {
-            return None;
-        };
-        let writes = matches!(
-            uop.operation,
-            Operation::Alu(..)
-                | Operation::Lui
-                | Operation::Auipc
-                | Operation::Jal
-                | Operation::Jalr
-                | Operation::Load(_)
-        );
-        (writes && uop.instruction.rd != Reg::ZERO).then_some(uop.instruction.rd)
-    }
-
-    fn holds_load(&self) -> bool {
-        matches!(self, Latch::Holds(uop) if matches!(uop.operation, Operation::Load(_)))
-    }
-}
-
-/// Resultado de la etapa WB cuando no falla.
-enum WriteBack {
-    Retired { retired: Retired, exit: Option<i32> },
-    AwaitingInput,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -215,13 +128,10 @@ impl FiveStage {
             return (read, None);
         }
         for (latch, bypass) in [(&self.ex_mem, Bypass::ExMem), (&self.mem_wb, Bypass::MemWb)] {
-            if latch.destination() == Some(reg) {
-                return match latch {
-                    Latch::Holds(Uop {
-                        result: Some(value),
-                        ..
-                    }) => (*value, Some(bypass)),
-                    _ => (read, None),
+            if let Some(produced) = latch.produces(reg) {
+                return match produced {
+                    Some(value) => (value, Some(bypass)),
+                    None => (read, None),
                 };
             }
         }
@@ -235,60 +145,6 @@ impl FiveStage {
         self.id_ex = Latch::Bubble;
         self.ex_mem = Latch::Bubble;
         self.mem_wb = Latch::Bubble;
-    }
-
-    /// WB: atiende la `ecall` si lo es, escribe `rd` y retira. Es el único punto donde cambian
-    /// los registros y el `pc` arquitectónico.
-    fn write_back(&mut self, uop: &Uop) -> Result<WriteBack, Trap> {
-        let mut ecall_write = None;
-        let mut exit = None;
-        if uop.operation == Operation::Ecall {
-            match ecall(&mut self.state)? {
-                EcallEffect::Continue { register_write } => ecall_write = register_write,
-                EcallEffect::Exit { code } => exit = Some(code),
-                EcallEffect::AwaitingInput => return Ok(WriteBack::AwaitingInput),
-            }
-        }
-        let register_write = uop
-            .result
-            .filter(|_| uop.instruction.rd != Reg::ZERO)
-            .map(|value| RegisterWrite {
-                reg: uop.instruction.rd,
-                value,
-            });
-        if let Some(write) = register_write {
-            self.state.registers.write(write.reg, write.value);
-        }
-        self.state.pc = uop.next_pc;
-        Ok(WriteBack::Retired {
-            retired: Retired {
-                pc: uop.pc,
-                word: uop.word,
-                instruction: uop.instruction,
-                next_pc: uop.next_pc,
-                register_write: register_write.or(ecall_write),
-                data_access: uop.data_access,
-            },
-            exit,
-        })
-    }
-
-    /// MEM: carga o almacenamiento con la dirección calculada en EX.
-    fn memory_stage(&mut self) -> Latch<Uop> {
-        let Latch::Holds(mut uop) = self.ex_mem else {
-            return self.ex_mem;
-        };
-        let Some(address) = uop.address else {
-            return Latch::Holds(uop);
-        };
-        match access_memory(&mut self.state.memory, uop.operation, address, uop.rs2) {
-            Ok((loaded, access)) => {
-                uop.result = uop.result.or(loaded);
-                uop.data_access = access;
-                Latch::Holds(uop)
-            }
-            Err(trap) => Latch::Fault(Halt { pc: uop.pc, trap }),
-        }
     }
 
     /// EX: adelanta los operandos si hace falta, la ALU y la decisión de salto. Devuelve
@@ -317,56 +173,13 @@ impl FiveStage {
         }
     }
 
-    /// ID: decodifica y lee los registros. Como WB ya ha escrito en este ciclo, se ve lo que
-    /// retira la instrucción de tres por delante, pero no lo de las dos anteriores.
-    fn decode_stage(&self) -> Latch<Uop> {
-        let fetched = match self.if_id {
-            Latch::Holds(fetched) => fetched,
-            Latch::Bubble => return Latch::Bubble,
-            Latch::Fault(halt) => return Latch::Fault(halt),
-        };
-        let fault = |trap| {
-            Latch::Fault(Halt {
-                pc: fetched.pc,
-                trap,
-            })
-        };
-        let instruction = match Instruction::decode(fetched.word) {
-            Ok(instruction) => instruction,
-            Err(error) => return fault(Trap::Decode(error)),
-        };
-        let operation = Operation::of(instruction.mnemonic);
-        if operation == Operation::Ebreak {
-            return fault(Trap::Breakpoint);
-        }
-        Latch::Holds(Uop {
-            pc: fetched.pc,
-            word: fetched.word,
-            instruction,
-            operation,
-            rs1: self.state.registers.read(instruction.rs1),
-            rs2: self.state.registers.read(instruction.rs2),
-            next_pc: fetched.pc.wrapping_add(4),
-            result: None,
-            address: None,
-            data_access: None,
-        })
-    }
-
-    /// IF: busca en `fetch_pc` y avanza. Un fallo de búsqueda puede ser de un camino que un
-    /// salto anterior aún va a vaciar, así que no para nada hasta llegar a WB.
+    /// IF: busca en `fetch_pc` y avanza si lo consigue.
     fn fetch_stage(&mut self) -> Latch<Fetched> {
-        let pc = self.fetch_pc;
-        match self.state.memory.fetch(pc) {
-            Ok(word) => {
-                self.fetch_pc = pc.wrapping_add(4);
-                Latch::Holds(Fetched { pc, word })
-            }
-            Err(error) => Latch::Fault(Halt {
-                pc,
-                trap: Trap::Memory(error),
-            }),
+        let fetched = fetch(&self.state.memory, self.fetch_pc);
+        if let Latch::Holds(_) = fetched {
+            self.fetch_pc = self.fetch_pc.wrapping_add(4);
         }
+        fetched
     }
 }
 
@@ -406,11 +219,7 @@ impl Processor for FiveStage {
             return Vec::new();
         }
         let older_pcs = [
-            match self.if_id {
-                Latch::Bubble => None,
-                Latch::Holds(fetched) => Some(fetched.pc),
-                Latch::Fault(halt) => Some(halt.pc),
-            },
+            self.if_id.pc(),
             self.id_ex.pc(),
             self.ex_mem.pc(),
             self.mem_wb.pc(),
@@ -424,7 +233,7 @@ impl Processor for FiveStage {
                 self.stop(halt);
                 return Vec::new();
             }
-            Latch::Holds(uop) => match self.write_back(&uop) {
+            Latch::Holds(uop) => match write_back(&mut self.state, &uop) {
                 Ok(WriteBack::Retired {
                     retired: entry,
                     exit: code,
@@ -454,7 +263,7 @@ impl Processor for FiveStage {
             return retired;
         }
 
-        let mem_wb = self.memory_stage();
+        let mem_wb = memory_stage(&mut self.state.memory, self.ex_mem);
         let (ex_mem, bypasses, redirect) = self.execute_stage();
         self.bypasses = bypasses;
         // En un ciclo de vaciado IF e ID también trabajan (en el camino equivocado) y se ve,
@@ -466,7 +275,7 @@ impl Processor for FiveStage {
                 (Latch::Bubble, Latch::Bubble, !mem_wb.blocks_fetch())
             }
             None => {
-                let decoded = self.decode_stage();
+                let decoded = decode(self.if_id, &self.state.registers);
                 if self.must_stall(&decoded) {
                     // La instrucción se queda en IF/ID y la de IF espera detrás; en EX entra
                     // una burbuja. `x0` nunca es destino, así que no frena a nadie.
