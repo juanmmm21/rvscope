@@ -37,6 +37,8 @@ export interface ModelInfo {
   readonly label: string;
   readonly equivalent: boolean;
   readonly forwarding: boolean;
+  readonly pipelined: boolean;
+  readonly lanes: number;
 }
 
 export interface RegisterInfo {

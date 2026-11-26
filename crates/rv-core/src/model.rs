@@ -78,6 +78,16 @@ impl Model {
         self != Model::FiveStageNoHazards
     }
 
+    /// Cierto si el modelo está segmentado en etapas (IF..WB).
+    pub fn pipelined(self) -> bool {
+        self != Model::SingleCycle
+    }
+
+    /// Instrucciones que puede tener cada etapa a la vez.
+    pub fn lanes(self) -> usize {
+        if self == Model::DualIssue { 2 } else { 1 }
+    }
+
     /// Cierto si EX recibe operandos adelantados desde EX/MEM y MEM/WB.
     pub fn forwards(self) -> bool {
         matches!(self, Model::FiveStageForwarding | Model::DualIssue)
@@ -199,6 +209,23 @@ mod tests {
             assert_eq!(machine.name(), model.title());
             machine.run(100);
             assert!(machine.halt().is_some());
+        }
+    }
+
+    #[test]
+    fn the_view_has_the_shape_the_model_announces() {
+        let program = rv_asm::assemble("li a7, 10\necall\n").unwrap();
+        for model in Model::ALL {
+            let mut machine = model.boot(&program).unwrap();
+            machine.step();
+            let view = machine.view();
+            assert_eq!(view.stages.len() > 1, model.pipelined(), "{model:?}");
+            assert!(
+                view.stages
+                    .iter()
+                    .all(|stage| stage.lanes.len() == model.lanes()),
+                "{model:?}"
+            );
         }
     }
 

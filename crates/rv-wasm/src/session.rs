@@ -85,6 +85,9 @@ pub struct ModelInfo {
     pub equivalent: bool,
     /// Cierto si EX recibe operandos adelantados: la ruta de datos dibuja sus multiplexores.
     pub forwarding: bool,
+    /// Si está segmentado y cuántas instrucciones caben en cada etapa: la forma del diagrama.
+    pub pipelined: bool,
+    pub lanes: usize,
 }
 
 /// Qué pasó al pedir un paso.
@@ -422,6 +425,8 @@ impl Session {
                 label: model.label(),
                 equivalent: model.is_equivalent(),
                 forwarding: model.forwards(),
+                pipelined: model.pipelined(),
+                lanes: model.lanes(),
             })
             .collect()
     }
