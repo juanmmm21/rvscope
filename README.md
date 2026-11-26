@@ -14,7 +14,8 @@ The ISA covered is RV32I plus the M extension (multiply and divide).
 
 ## What makes it interesting
 
-- **A real two-pass assembler**, not a regex translator: tokenizer with source spans, operand and expression parser (`label+4`, `%hi(sym)`, `%lo(sym)(a0)`, `.equ` constants), sections, data directives with natural alignment, and pseudo-instruction expansion with the shortest correct sequence (`li` picks one or two instructions depending on the constant).
+- **A real two-pass assembler**, not a regex translator: tokenizer with source spans, operand and expression parser with C precedence (`label+4`, `(1 << 31) - 1`, `%hi(sym)`, `%lo(sym)(a0)`, `.equ` constants), numeric local labels (`1:` / `1b` / `1f`), several statements per line with `;`, sections, data directives with natural alignment, and pseudo-instruction expansion with the shortest correct sequence (`li` picks one or two instructions depending on the constant).
+- **Conformance with the official [riscv-tests](https://github.com/riscv-software-src/riscv-tests)**: the 40 applicable rv32ui tests and the 8 rv32um tests are assembled by rvscope's own assembler and run on every processor model in CI. They are preprocessed once from the upstream sources with a small replacement for the test environment, so neither CI nor contributors need a RISC-V toolchain.
 - **Bit-exact encoding and decoding** for every instruction format (R, I, S, B, U, J), checked with encode → decode → disassemble → re-assemble round trips over every instruction in the table.
 - **Error reporting built for an editor**: every error carries line, column and length, all errors in a file are reported at once, and a fuzz-style test throws thousands of garbage lines at the assembler to prove it never panics.
 - **A strict boundary between core and UI**: only one crate knows about `wasm-bindgen`; everything else is plain Rust, tested natively and usable from the command line.
@@ -118,11 +119,14 @@ npm run dev
 - Numbers in decimal, `0x` hex, `0b` binary, `0o` octal and character literals (`'A'`, `'\n'`).
 - Sections: `.text`, `.data`, `.rodata`, `.bss`, `.section`.
 - Data: `.byte`, `.half`, `.word`, `.string` / `.asciz`, `.ascii`, `.space` / `.zero`, `.align`, `.balign`.
-- Symbols: labels, `.equ` / `.set` constants, `.globl`.
+- Symbols: labels, numeric local labels (`1:` referenced as `1b` backwards or `1f` forwards), `.equ` / `.set` constants, `.globl`.
+- Expressions: `+ - * /`, `<< >>`, `& | ^`, unary `-` and `~`, parentheses, evaluated in 64-bit two's complement like GNU as (so masks such as `0xffffffff80000000 & 0xffffffff` work); the instruction or directive then checks that the result fits.
 - Relocation modifiers: `%hi(expr)` and `%lo(expr)`.
-- Pseudo-instructions: `nop`, `li`, `la`, `mv`, `not`, `neg`, `seqz`, `snez`, `sltz`, `sgtz`, `beqz`, `bnez`, `blez`, `bgez`, `bltz`, `bgtz`, `bgt`, `ble`, `bgtu`, `bleu`, `j`, `jal label`, `jr`, `jalr rs`, `ret`, `call`, `tail`, and the global load/store forms (`lw a0, label`, `sw a0, label, t0`).
+- Several statements on one line separated by `;`, and `.option` (accepted for compatibility with compiler output; it changes nothing).
+- Register-register ALU instructions with an immediate operand assemble as their immediate form, as in GNU as (`add a0, a1, 5` is `addi`).
+- Pseudo-instructions: `nop`, `li`, `la`, `lla`, `mv`, `not`, `neg`, `seqz`, `snez`, `sltz`, `sgtz`, `beqz`, `bnez`, `blez`, `bgez`, `bltz`, `bgtz`, `bgt`, `ble`, `bgtu`, `bleu`, `j`, `jal label`, `jr rs[, imm]`, `jalr rs`, `ret`, `call`, `tail`, and the global load/store forms (`lw a0, label`, `sw a0, label, t0`).
 
-Memory layout: `.text` starts at `0x00000000` and `.data` at `0x10000000`.
+Memory layout: `.text` starts at `0x00000000` and `.data` at `0x10000000`. Alignment gaps inside `.text` are filled with `nop`, so code after `.align` runs as expected.
 
 ## Using the crates
 
@@ -151,6 +155,16 @@ npm run wasm && npm run lint && npm run typecheck && npm run build
 
 CI runs the same checks on every push to `main`.
 
+The riscv-tests live preprocessed in `crates/rv-core/tests/riscv-tests` (with their BSD license and the upstream commit). To refresh them from a newer upstream checkout:
+
+```bash
+git clone https://github.com/riscv-software-src/riscv-tests /tmp/riscv-tests
+scripts/vendor-riscv-tests.sh /tmp/riscv-tests
+cargo test -p rv-core --test riscv_tests
+```
+
+`fence_i` (needs Zifencei) and `ma_data` (misaligned accesses, which rvscope reports as an error) are left out.
+
 ## Troubleshooting
 
 - **`wasm-pack: command not found`** — install it from its release page or with `cargo install wasm-pack`, and make sure `~/.cargo/bin` is on your `PATH`.
@@ -161,3 +175,5 @@ CI runs the same checks on every push to `main`.
 ## License
 
 [MIT](LICENSE) © juanmmm21
+
+The preprocessed riscv-tests in `crates/rv-core/tests/riscv-tests` are © The Regents of the University of California and distributed under their own [BSD license](crates/rv-core/tests/riscv-tests/LICENSE).
