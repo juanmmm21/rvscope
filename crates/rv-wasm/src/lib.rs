@@ -25,6 +25,13 @@ pub fn models() -> Result<JsValue, JsError> {
     to_js(&Session::models())
 }
 
+/// Registros con su nombre ABI, papel y quién los guarda (`RegisterInfo[]`), de la tabla de
+/// `rv-isa`: la interfaz no tiene su propia lista.
+#[wasm_bindgen]
+pub fn registers() -> Result<JsValue, JsError> {
+    to_js(&rv_isa::REGISTERS)
+}
+
 /// `None` se convierte en `null` y los mapas en objetos planos, como en JSON: así los tipos
 /// de TypeScript son simples y una instantánea se puede guardar tal cual.
 fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsError> {
