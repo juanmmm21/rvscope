@@ -2,10 +2,11 @@
 //! todos los modelos de procesador, así que el resultado de una operación no puede divergir
 //! entre ellos; lo único que cambia de un modelo a otro es cuándo se calcula.
 
-use rv_isa::Mnemonic;
+use rv_isa::{Instruction, Mnemonic};
 use serde::Serialize;
 
-use crate::memory::Width;
+use crate::memory::{AccessKind, Memory, Width};
+use crate::processor::{DataAccess, Trap};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -199,6 +200,108 @@ impl Operation {
             M::Rem => O::Alu(A::Rem, Reg),
             M::Remu => O::Alu(A::Remu, Reg),
         }
+    }
+}
+
+/// Lo que sale de la etapa de ejecución: siguiente `pc`, resultado de la ALU (o el enlace de
+/// `jal`/`jalr`) y, en cargas y almacenamientos, la dirección efectiva.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Execution {
+    pub next_pc: u32,
+    pub result: Option<u32>,
+    pub address: Option<u32>,
+}
+
+/// Etapa de ejecución con los operandos ya leídos: lo que hace la ALU y dónde sigue el
+/// programa. No toca la memoria ni los registros.
+pub fn execute(
+    operation: Operation,
+    instruction: &Instruction,
+    pc: u32,
+    rs1: u32,
+    rs2: u32,
+) -> Result<Execution, Trap> {
+    let imm = instruction.imm as u32;
+    let link = pc.wrapping_add(4);
+    let mut execution = Execution {
+        next_pc: link,
+        result: None,
+        address: None,
+    };
+    match operation {
+        Operation::Alu(op, source) => {
+            let operand = match source {
+                AluSource::Register => rs2,
+                AluSource::Immediate => imm,
+            };
+            execution.result = Some(op.apply(rs1, operand));
+        }
+        Operation::Lui => execution.result = Some(imm),
+        Operation::Auipc => execution.result = Some(pc.wrapping_add(imm)),
+        Operation::Jal => {
+            execution.next_pc = jump_target(pc.wrapping_add(imm))?;
+            execution.result = Some(link);
+        }
+        Operation::Jalr => {
+            execution.next_pc = jump_target(rs1.wrapping_add(imm) & !1)?;
+            execution.result = Some(link);
+        }
+        Operation::Branch(cond) => {
+            if cond.taken(rs1, rs2) {
+                execution.next_pc = jump_target(pc.wrapping_add(imm))?;
+            }
+        }
+        Operation::Load(_) | Operation::Store(_) => {
+            execution.address = Some(rs1.wrapping_add(imm));
+        }
+        // Con un solo hilo y sin cachés todavía, `fence` no tiene nada que ordenar; `ecall` y
+        // `ebreak` los atiende cada modelo en su punto de retirada.
+        Operation::Fence | Operation::Ecall | Operation::Ebreak => {}
+    }
+    Ok(execution)
+}
+
+/// Etapa de memoria: hace la carga o el almacenamiento de `operation` en `address`. Devuelve
+/// el valor cargado ya extendido (para escribirlo en `rd`) y el acceso, para la interfaz. Si
+/// falla, la memoria queda intacta.
+pub fn access_memory(
+    memory: &mut Memory,
+    operation: Operation,
+    address: u32,
+    rs2: u32,
+) -> Result<(Option<u32>, Option<DataAccess>), Trap> {
+    match operation {
+        Operation::Load(load) => {
+            let value = load.extend(memory.load(address, load.width)?);
+            let access = DataAccess {
+                kind: AccessKind::Load,
+                address,
+                width: load.width,
+                value,
+            };
+            Ok((Some(value), Some(access)))
+        }
+        Operation::Store(width) => {
+            memory.store(address, width, rs2)?;
+            let access = DataAccess {
+                kind: AccessKind::Store,
+                address,
+                width,
+                value: rs2,
+            };
+            Ok((None, Some(access)))
+        }
+        _ => Ok((None, None)),
+    }
+}
+
+/// Sin la extensión C, saltar a una dirección que no es múltiplo de 4 es una excepción de la
+/// propia instrucción de salto, no de la búsqueda siguiente.
+fn jump_target(target: u32) -> Result<u32, Trap> {
+    if target % 4 == 0 {
+        Ok(target)
+    } else {
+        Err(Trap::MisalignedTarget { target })
     }
 }
 

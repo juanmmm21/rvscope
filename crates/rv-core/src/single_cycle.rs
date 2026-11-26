@@ -4,10 +4,9 @@
 use rv_asm::Program;
 use rv_isa::{Instruction, Reg};
 
-use crate::exec::{AluSource, Operation};
+use crate::exec::{Operation, access_memory, execute};
 use crate::map::MapError;
-use crate::memory::AccessKind;
-use crate::processor::{DataAccess, Halt, Processor, RegisterWrite, Retired, Stats, Trap};
+use crate::processor::{Halt, Processor, RegisterWrite, Retired, Stats, Trap};
 use crate::state::ArchState;
 use crate::syscall::{Console, EcallEffect, ecall};
 
@@ -47,69 +46,29 @@ impl SingleCycle {
         let pc = state.pc;
         let word = state.memory.fetch(pc)?;
         let instruction = Instruction::decode(word)?;
+        let operation = Operation::of(instruction.mnemonic);
+        if operation == Operation::Ebreak {
+            return Err(Trap::Breakpoint);
+        }
         let rs1 = state.registers.read(instruction.rs1);
         let rs2 = state.registers.read(instruction.rs2);
-        let imm = instruction.imm as u32;
-        let link = pc.wrapping_add(4);
+        let execution = execute(operation, &instruction, pc, rs1, rs2)?;
 
-        let mut next_pc = link;
-        let mut result: Option<u32> = None;
-        let mut data_access: Option<DataAccess> = None;
+        let mut result = execution.result;
+        let mut data_access = None;
         let mut ecall_write: Option<RegisterWrite> = None;
         let mut exit: Option<i32> = None;
-
-        match Operation::of(instruction.mnemonic) {
-            Operation::Alu(op, source) => {
-                let operand = match source {
-                    AluSource::Register => rs2,
-                    AluSource::Immediate => imm,
-                };
-                result = Some(op.apply(rs1, operand));
-            }
-            Operation::Lui => result = Some(imm),
-            Operation::Auipc => result = Some(pc.wrapping_add(imm)),
-            Operation::Jal => {
-                next_pc = jump_target(pc.wrapping_add(imm))?;
-                result = Some(link);
-            }
-            Operation::Jalr => {
-                next_pc = jump_target(rs1.wrapping_add(imm) & !1)?;
-                result = Some(link);
-            }
-            Operation::Branch(cond) => {
-                if cond.taken(rs1, rs2) {
-                    next_pc = jump_target(pc.wrapping_add(imm))?;
-                }
-            }
-            Operation::Load(load) => {
-                let address = rs1.wrapping_add(imm);
-                let value = load.extend(state.memory.load(address, load.width)?);
-                result = Some(value);
-                data_access = Some(DataAccess {
-                    kind: AccessKind::Load,
-                    address,
-                    width: load.width,
-                    value,
-                });
-            }
-            Operation::Store(width) => {
-                let address = rs1.wrapping_add(imm);
-                state.memory.store(address, width, rs2)?;
-                data_access = Some(DataAccess {
-                    kind: AccessKind::Store,
-                    address,
-                    width,
-                    value: rs2,
-                });
-            }
-            // Con un solo hilo y sin cachés todavía, `fence` no tiene nada que ordenar.
-            Operation::Fence => {}
-            Operation::Ecall => match ecall(state)? {
+        if let Some(address) = execution.address {
+            let (loaded, access) = access_memory(&mut state.memory, operation, address, rs2)?;
+            result = result.or(loaded);
+            data_access = access;
+        }
+        if operation == Operation::Ecall {
+            match ecall(state)? {
                 EcallEffect::Continue { register_write } => ecall_write = register_write,
                 EcallEffect::Exit { code } => exit = Some(code),
                 EcallEffect::AwaitingInput => return Ok(Executed::AwaitingInput),
-            },
-            Operation::Ebreak => return Err(Trap::Breakpoint),
+            }
         }
 
         let register_write =
@@ -122,28 +81,18 @@ impl SingleCycle {
         if let Some(write) = register_write {
             state.registers.write(write.reg, write.value);
         }
-        state.pc = next_pc;
+        state.pc = execution.next_pc;
         Ok(Executed::Retired {
             retired: Retired {
                 pc,
                 word,
                 instruction,
-                next_pc,
+                next_pc: execution.next_pc,
                 register_write: register_write.or(ecall_write),
                 data_access,
             },
             exit,
         })
-    }
-}
-
-/// Sin la extensión C, saltar a una dirección que no es múltiplo de 4 es una excepción de la
-/// propia instrucción de salto, no de la búsqueda siguiente.
-fn jump_target(target: u32) -> Result<u32, Trap> {
-    if target % 4 == 0 {
-        Ok(target)
-    } else {
-        Err(Trap::MisalignedTarget { target })
     }
 }
 
@@ -203,7 +152,8 @@ impl Processor for SingleCycle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::{MemoryError, Width};
+    use crate::memory::{AccessKind, MemoryError, Width};
+    use crate::processor::DataAccess;
     use crate::processor::RunOutcome;
     use rv_isa::DecodeError;
 
