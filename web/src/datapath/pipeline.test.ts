@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import type { Control, RegisterInfo, Slot, Snapshot, StageSnapshot, Wires } from '../core';
+import type {
+  Control,
+  ModelInfo,
+  RegisterInfo,
+  Slot,
+  Snapshot,
+  StageSnapshot,
+  Wires,
+} from '../core';
+import { datapathKind } from './panel';
 import {
   PIPELINE_WIRE_IDS,
   describePipeline,
@@ -369,5 +378,23 @@ describe('pipelineState', () => {
     expect(describePipeline(state)).toBe(
       'Último ciclo: WB ecall; el programa terminó con código 0.',
     );
+  });
+});
+
+describe('datapathKind', () => {
+  const model = (pipelined: boolean, lanes: number): ModelInfo => ({
+    id: 'x',
+    title: 'x',
+    label: 'x',
+    equivalent: true,
+    forwarding: false,
+    pipelined,
+    lanes,
+  });
+
+  it('elige el diagrama por la forma del modelo', () => {
+    expect(datapathKind(model(false, 1))).toBe('single');
+    expect(datapathKind(model(true, 1))).toBe('pipeline');
+    expect(datapathKind(model(true, 2))).toBe('none');
   });
 });

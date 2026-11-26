@@ -291,7 +291,7 @@ export function pipelineState(
     muxes,
     pc: lanes.if?.slot?.pc ?? null,
     word: lanes.if?.slot?.word ?? null,
-    decoding: lanes.id?.slot?.text ?? null,
+    decoding: decode?.text ?? null,
     signals:
       idControl === null ? [] : controlSignals(idControl, null, idControl.write_source ?? null),
     alu: alu === null ? null : { label: aluLabel(alu).toUpperCase(), out: alu.out },
