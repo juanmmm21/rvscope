@@ -1,5 +1,6 @@
 //! Memoria, modelos de procesador y llamadas al sistema de rvscope.
 
+mod dual_issue;
 mod exec;
 mod five_stage;
 mod map;
@@ -10,6 +11,7 @@ mod single_cycle;
 mod state;
 mod syscall;
 
+pub use dual_issue::DualIssue;
 pub use exec::{AluOp, AluSource, BranchCond, LoadOp, Operation};
 pub use five_stage::{FiveStage, Hazards};
 pub use map::{
