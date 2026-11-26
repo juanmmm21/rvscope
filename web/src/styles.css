@@ -444,3 +444,232 @@ kbd {
 .console-form[data-awaiting='true'] input {
   border-color: var(--accent);
 }
+
+.primary {
+  display: grid;
+  gap: 1.5rem;
+  align-content: start;
+  min-width: 0;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Opciones excluyentes como texto con una línea debajo de la elegida. */
+.segmented {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.1rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.segment {
+  position: relative;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.segment input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.segment span {
+  display: block;
+  padding: 0.1rem 0.45rem;
+  border-bottom: 1px solid transparent;
+}
+
+.segment:hover span {
+  color: var(--fg);
+}
+
+.segment input:checked + span {
+  color: var(--fg);
+  border-bottom-color: var(--fg);
+}
+
+.segment input:focus-visible + span {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.segment input:disabled + span {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.register-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.memory-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1.25rem;
+  margin-bottom: 0.4rem;
+}
+
+.follow {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+}
+
+.follow input {
+  accent-color: var(--muted);
+}
+
+.memory-goto {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.memory-goto input {
+  width: 13rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.memory-goto input::placeholder {
+  color: var(--muted);
+  opacity: 0.7;
+}
+
+.memory-status {
+  margin: 0 0 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.memory-status[data-state='error'] {
+  color: var(--danger);
+}
+
+.memory-scroll {
+  position: relative;
+  max-height: 17rem;
+  overflow: auto;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.memory-grid {
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.memory-grid:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.memory-grid thead th {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  padding: 0.3rem 1ch;
+  /* Con border-collapse el borde no viaja con la cabecera fija; la sombra sí. */
+  box-shadow: inset 0 -1px 0 var(--line);
+  font-size: 0.68rem;
+  font-weight: 400;
+  text-align: left;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.memory-grid td,
+.memory-address {
+  padding: 0.12rem 1ch;
+  text-align: left;
+}
+
+.memory-address {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.memory-grid[data-columns='16'] td.memory-cell {
+  padding-inline: 0.35ch;
+}
+
+/* Separación cada palabra en la vista por bytes. */
+.memory-grid[data-columns='16'] td.memory-cell:nth-child(4n + 2) {
+  padding-left: 1.2ch;
+}
+
+.memory-ascii {
+  padding-left: 1.5ch;
+  color: var(--muted);
+  letter-spacing: 0.05em;
+}
+
+.memory-cell[data-target='true'] {
+  outline: 1px dashed var(--muted);
+  outline-offset: -1px;
+}
+
+.memory-cell[data-sp='true'] {
+  box-shadow: inset 2px 0 0 var(--fg);
+}
+
+.memory-cell[data-access='load'] {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  background: var(--surface);
+}
+
+.memory-cell[data-access='store'] {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.memory-legend {
+  margin: 0.4rem 0 0;
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+
+.legend-load {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.legend-store {
+  color: var(--accent);
+}
+
+.legend-sp {
+  padding-left: 0.4ch;
+  box-shadow: inset 2px 0 0 var(--fg);
+}
+
+.registers[data-format='ascii'] .register-value {
+  white-space: pre;
+}

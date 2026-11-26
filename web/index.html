@@ -33,27 +33,81 @@
       <p id="run-status" class="run-status" role="status" aria-live="polite"></p>
     </nav>
     <main id="app">
-      <section class="panel source" aria-labelledby="source-title">
-        <div class="panel-head">
-          <h2 class="label" id="source-title">Código</h2>
-          <span class="label listing-head" aria-hidden="true"
-            >Dirección · Código máquina · Instrucción</span
-          >
-        </div>
-        <div class="source-body">
-          <div id="editor" class="editor"></div>
-          <div id="listing" class="listing" aria-label="Desensamblado por línea"></div>
-        </div>
-        <p id="assembly-status" class="assembly-status" role="status" aria-live="polite"></p>
-        <p class="shortcuts label">
-          <kbd>F9</kbd> punto de parada · <kbd>F10</kbd> paso · <kbd>Mayús</kbd>+<kbd>F10</kbd> paso
-          atrás · <kbd>Ctrl</kbd>+<kbd>Intro</kbd> ejecutar o pausar · <kbd>Ctrl</kbd>+<kbd>S</kbd>
-          ensamblar
-        </p>
-      </section>
+      <div class="primary">
+        <section class="panel source" aria-labelledby="source-title">
+          <div class="panel-head">
+            <h2 class="label" id="source-title">Código</h2>
+            <span class="label listing-head" aria-hidden="true"
+              >Dirección · Código máquina · Instrucción</span
+            >
+          </div>
+          <div class="source-body">
+            <div id="editor" class="editor"></div>
+            <div id="listing" class="listing" aria-label="Desensamblado por línea"></div>
+          </div>
+          <p id="assembly-status" class="assembly-status" role="status" aria-live="polite"></p>
+          <p class="shortcuts label">
+            <kbd>F9</kbd> punto de parada · <kbd>F10</kbd> paso · <kbd>Mayús</kbd>+<kbd>F10</kbd>
+            paso atrás · <kbd>Ctrl</kbd>+<kbd>Intro</kbd> ejecutar o pausar · <kbd>Ctrl</kbd>+<kbd
+              >S</kbd
+            >
+            ensamblar
+          </p>
+        </section>
+        <section class="panel memory" aria-labelledby="memory-title">
+          <div class="panel-head">
+            <h2 class="label" id="memory-title">Memoria</h2>
+            <fieldset class="segmented" id="memory-unit">
+              <legend class="visually-hidden">Unidad</legend>
+            </fieldset>
+          </div>
+          <div class="memory-bar">
+            <fieldset class="segmented" id="memory-region">
+              <legend class="visually-hidden">Segmento</legend>
+            </fieldset>
+            <label class="follow label"
+              ><input type="checkbox" id="memory-follow-sp" /> seguir sp</label
+            >
+            <form id="memory-goto" class="memory-goto">
+              <label class="label" for="memory-goto-input">Ir a</label>
+              <input
+                id="memory-goto-input"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="0x10000000, n, sp + 8"
+              />
+              <button type="submit" id="memory-goto-button">Ir</button>
+            </form>
+            <div class="control-group">
+              <button type="button" id="memory-previous" aria-label="Página anterior">↑</button>
+              <button type="button" id="memory-next" aria-label="Página siguiente">↓</button>
+            </div>
+          </div>
+          <p id="memory-status" class="memory-status" role="status" aria-live="polite"></p>
+          <div class="memory-scroll">
+            <table
+              id="memory-grid"
+              class="memory-grid"
+              tabindex="0"
+              aria-describedby="memory-status"
+              aria-label="Contenido de la memoria (flechas y AvPág / RePág para moverse)"
+            ></table>
+          </div>
+          <p class="memory-legend label">
+            <span class="legend-load">leído</span> y <span class="legend-store">escrito</span> en el
+            último ciclo · <span class="legend-sp">sp</span>
+          </p>
+        </section>
+      </div>
       <div class="side">
         <section class="panel" aria-labelledby="registers-title">
-          <h2 class="label" id="registers-title">Registros</h2>
+          <div class="panel-head">
+            <h2 class="label" id="registers-title">Registros</h2>
+            <fieldset class="segmented" id="register-format">
+              <legend class="visually-hidden">Formato</legend>
+            </fieldset>
+          </div>
           <div id="registers" class="registers"></div>
         </section>
         <section class="panel console" aria-labelledby="console-title">
