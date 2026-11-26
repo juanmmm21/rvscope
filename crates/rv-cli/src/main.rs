@@ -9,16 +9,17 @@ use std::process::ExitCode;
 use rv_asm::{Program, assemble};
 use rv_isa::{Group, INSTRUCTIONS, PSEUDO_INSTRUCTIONS, RegisterStyle};
 
-use run::{RunOptions, run_program};
+use run::{Model, RunOptions, run_program};
 
 const USAGE: &str = "uso: rvscope <orden>
 
 órdenes:
   asm <fichero.s>   ensambla y muestra el listado (dirección, palabra, instrucción, línea)
   run <fichero.s> [opciones]
-                    ejecuta en el procesador de un ciclo; lo que el programa lee sale del
-                    stdin y lo que imprime va al stdout; el motivo de la parada, los
-                    registros y la traza van al stderr
+                    ejecuta el programa; lo que lee sale del stdin y lo que imprime va al
+                    stdout; el motivo de la parada, los registros y la traza van al stderr
+      --cpu <modelo>    un-ciclo (por defecto) o 5-etapas-sin-riesgos (segmentado sin
+                        forwarding ni detección de riesgos: lee valores viejos)
       --trace           muestra cada instrucción retirada y lo que cambia
       --max-cycles <n>  tope de ciclos (por defecto 10000000)
       --numeric         registros como x0..x31 en vez de sus nombres del ABI
@@ -85,6 +86,16 @@ fn parse_run_args<'a>(args: &[&'a str]) -> Result<(&'a str, RunOptions), String>
         match arg {
             "--trace" => options.trace = true,
             "--numeric" => options.style = RegisterStyle::Numeric,
+            "--cpu" => {
+                let name = rest.next().ok_or("--cpu necesita el nombre de un modelo")?;
+                options.model = Model::parse(name).ok_or_else(|| {
+                    let names: Vec<&str> = Model::NAMES.iter().map(|(name, _)| *name).collect();
+                    format!(
+                        "--cpu: no hay un modelo «{name}» (hay {})",
+                        names.join(", ")
+                    )
+                })?;
+            }
             "--max-cycles" => {
                 let value = rest
                     .next()
@@ -181,6 +192,9 @@ mod tests {
         assert!(options.trace);
         assert_eq!(options.max_cycles, 1000);
         assert_eq!(options.style, RegisterStyle::Numeric);
+        assert_eq!(options.model, Model::SingleCycle);
+        let (_, options) = parse_run_args(&["--cpu", "5-etapas-sin-riesgos", "prog.s"]).unwrap();
+        assert_eq!(options.model, Model::FiveStageNoHazards);
     }
 
     #[test]
@@ -190,6 +204,8 @@ mod tests {
         assert!(parse_run_args(&["a.s", "--max-cycles"]).is_err());
         assert!(parse_run_args(&["a.s", "--max-cycles", "mucho"]).is_err());
         assert!(parse_run_args(&["a.s", "--rapido"]).is_err());
+        assert!(parse_run_args(&["a.s", "--cpu"]).is_err());
+        assert!(parse_run_args(&["a.s", "--cpu", "turbo"]).is_err());
         assert_eq!(parse_run_args(&["a.s"]).unwrap().1, RunOptions::default());
     }
 }

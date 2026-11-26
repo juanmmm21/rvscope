@@ -98,3 +98,20 @@ fn bad_options_print_usage() {
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("opción desconocida"));
 }
+
+#[test]
+fn the_pipeline_without_hazard_detection_reads_stale_values() {
+    let source = "li a0, 5\naddi a0, a0, 1\nli a7, 93\necall\n";
+    let single = rvscope_run("hazard-single", source, "", &[]);
+    assert_eq!(single.status.code(), Some(6));
+    let pipelined = rvscope_run(
+        "hazard-pipe",
+        source,
+        "",
+        &["--cpu", "5-etapas-sin-riesgos"],
+    );
+    // addi lee a0 antes de que li lo escriba: 0 + 1.
+    assert_eq!(pipelined.status.code(), Some(1));
+    let report = String::from_utf8_lossy(&pipelined.stderr);
+    assert!(report.contains("instrucciones: 4"), "{report}");
+}

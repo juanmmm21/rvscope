@@ -1,11 +1,12 @@
-//! Orden `run`: ejecuta un programa en el modelo de un ciclo con el stdin como entrada de la
-//! consola, y cuenta por qué se paró, cómo quedaron los registros y, si se pide, la traza.
+//! Orden `run`: ejecuta un programa en el modelo de procesador elegido con el stdin como entrada
+//! de la consola, y cuenta por qué se paró, cómo quedaron los registros y, si se pide, la traza.
 
 use std::io::{self, BufRead, Write};
 
 use rv_asm::Program;
 use rv_core::{
-    AccessKind, Halt, MapError, MemoryError, Processor, Retired, SingleCycle, Stats, Trap,
+    AccessKind, FiveStage, Halt, MapError, MemoryError, Processor, Retired, SingleCycle, Stats,
+    Trap,
 };
 use rv_isa::{Reg, RegisterStyle};
 
@@ -13,8 +14,38 @@ use rv_isa::{Reg, RegisterStyle};
 /// infinito termina en pocos segundos.
 pub const DEFAULT_MAX_CYCLES: u64 = 10_000_000;
 
+/// Modelos de procesador que se pueden elegir con `--cpu`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Model {
+    SingleCycle,
+    FiveStageNoHazards,
+}
+
+impl Model {
+    /// Nombre de cada modelo en la línea de comandos, en el orden en que se listan.
+    pub const NAMES: [(&'static str, Model); 2] = [
+        ("un-ciclo", Model::SingleCycle),
+        ("5-etapas-sin-riesgos", Model::FiveStageNoHazards),
+    ];
+
+    pub fn parse(name: &str) -> Option<Model> {
+        Model::NAMES
+            .iter()
+            .find(|(candidate, _)| *candidate == name)
+            .map(|(_, model)| *model)
+    }
+
+    fn boot(self, program: &Program) -> Result<Box<dyn Processor>, MapError> {
+        Ok(match self {
+            Model::SingleCycle => Box::new(SingleCycle::new(program)?),
+            Model::FiveStageNoHazards => Box::new(FiveStage::new(program)?),
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RunOptions {
+    pub model: Model,
     pub trace: bool,
     pub max_cycles: u64,
     pub style: RegisterStyle,
@@ -23,6 +54,7 @@ pub struct RunOptions {
 impl Default for RunOptions {
     fn default() -> RunOptions {
         RunOptions {
+            model: Model::SingleCycle,
             trace: false,
             max_cycles: DEFAULT_MAX_CYCLES,
             style: RegisterStyle::Abi,
@@ -74,7 +106,7 @@ pub fn run_program(
     out: &mut impl Write,
     report: &mut impl Write,
 ) -> Result<(Ending, Stats), RunError> {
-    let mut cpu = SingleCycle::new(program)?;
+    let mut cpu = options.model.boot(program)?;
     let mut printed = 0;
     let ending = loop {
         if let Some(halt) = cpu.halt() {
@@ -90,18 +122,18 @@ pub fn run_program(
                 write_trace_line(program, cpu.stats().cycles, entry, options.style, report)?;
             }
         }
-        printed = flush_output(&cpu, printed, out)?;
+        printed = flush_output(cpu.as_ref(), printed, out)?;
         if cpu.awaiting_input() {
-            feed_line(&mut cpu, input)?;
+            feed_line(cpu.as_mut(), input)?;
         }
     };
     out.flush()?;
-    write_summary(program, &cpu, ending, options.style, report)?;
+    write_summary(program, cpu.as_ref(), ending, options.style, report)?;
     Ok((ending, cpu.stats()))
 }
 
 /// Escribe lo que el programa ha impreso desde la última vez y devuelve cuánto lleva escrito.
-fn flush_output(cpu: &SingleCycle, printed: usize, out: &mut impl Write) -> io::Result<usize> {
+fn flush_output(cpu: &dyn Processor, printed: usize, out: &mut impl Write) -> io::Result<usize> {
     let output = cpu.state().console.output();
     if let Some(fresh) = output.get(printed..).filter(|fresh| !fresh.is_empty()) {
         out.write_all(fresh)?;
@@ -112,7 +144,7 @@ fn flush_output(cpu: &SingleCycle, printed: usize, out: &mut impl Write) -> io::
 
 /// Da a la consola una línea más de la entrada; al acabarse, la cierra para que leer sea un
 /// error en vez de una espera eterna.
-fn feed_line(cpu: &mut SingleCycle, input: &mut impl BufRead) -> io::Result<()> {
+fn feed_line(cpu: &mut dyn Processor, input: &mut impl BufRead) -> io::Result<()> {
     let mut line = String::new();
     if input.read_line(&mut line)? == 0 {
         cpu.console_mut().close_input();
@@ -164,7 +196,7 @@ fn write_trace_line(
 
 fn write_summary(
     program: &Program,
-    cpu: &SingleCycle,
+    cpu: &dyn Processor,
     ending: Ending,
     style: RegisterStyle,
     report: &mut impl Write,
@@ -221,7 +253,7 @@ fn ran_off_the_end(program: &Program, halt: Halt) -> bool {
 
 /// Los 32 registros en filas de cuatro.
 fn write_registers(
-    cpu: &SingleCycle,
+    cpu: &dyn Processor,
     style: RegisterStyle,
     report: &mut impl Write,
 ) -> io::Result<()> {
