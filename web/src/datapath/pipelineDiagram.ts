@@ -4,6 +4,7 @@ import {
   PIPELINE_STAGES,
   PIPELINE_WIRE_IDS,
   conditionLabel,
+  laneName,
   stageName,
   type PipelineMuxId,
   type PipelineStage,
@@ -56,6 +57,15 @@ interface PipelineParts {
   readonly dataKind: SVGTextElement;
   readonly dataAddress: SVGTextElement;
   readonly dataValue: SVGTextElement;
+  // Con dos vías, de qué vía llega cada operando adelantado.
+  readonly sources: Readonly<Record<'a' | 'b', SVGTextElement>> | null;
+}
+
+// Vía que dibuja este diagrama cuando el procesador tiene varias.
+export interface LaneOptions {
+  readonly index: number;
+  readonly title: string;
+  readonly subtitle: string;
 }
 
 export class PipelineDiagram {
@@ -68,7 +78,7 @@ export class PipelineDiagram {
   readonly #parts: PipelineParts;
   readonly #units: Readonly<Record<string, SVGGElement>>;
 
-  constructor(caption: string, forwarding: boolean) {
+  constructor(caption: string, forwarding: boolean, lane: LaneOptions | null = null) {
     this.forwarding = forwarding;
     const layout = pipelineLayout(forwarding);
     const root = svg('svg', {
@@ -78,6 +88,12 @@ export class PipelineDiagram {
       'aria-label': caption,
     });
     this.element = root;
+    if (lane !== null) {
+      root.dataset.lane = String(lane.index);
+      // En el hueco libre sobre el PC: la fila de arriba es de las cabeceras de etapa.
+      text(root, 26, 104, 'dp-lane', 'start', lane.title);
+      text(root, 26, 118, 'dp-title', 'start', lane.subtitle);
+    }
 
     const headers = {} as Record<PipelineStage, StageHeader>;
     for (const stage of PIPELINE_STAGES) {
@@ -165,6 +181,14 @@ export class PipelineDiagram {
       dataKind: text(data, d.x + 10, d.y + 34, 'dp-port', 'start'),
       dataAddress: text(data, d.x + 10, d.y + 82, 'dp-value', 'start'),
       dataValue: text(data, d.x + 10, d.y + 100, 'dp-value', 'start'),
+      // Encima de cada multiplexor de adelantamiento, donde no pasa ningún cable.
+      sources:
+        lane === null || !forwarding
+          ? null
+          : {
+              a: text(units, 574, 199, 'dp-port dp-source', 'start'),
+              b: text(units, 574, 289, 'dp-port dp-source', 'start'),
+            },
     };
     this.#units = { pc, instructions, control, registers, immediate, target, data, alu };
 
@@ -217,6 +241,14 @@ export class PipelineDiagram {
     parts.dataAddress.textContent = memory === null ? '' : `@ ${hexWord(memory.address)}`;
     parts.dataValue.textContent = memory === null ? '' : hexWord(memory.value);
     parts.dataValue.dataset.written = String(memory?.kind === 'store');
+    if (parts.sources !== null) {
+      for (const operand of ['a', 'b'] as const) {
+        const source = state.bypasses[operand];
+        const tag = parts.sources[operand];
+        tag.textContent = source === null ? '' : laneName(source.lane);
+        tag.dataset.cross = String(source !== null && source.lane !== state.lane);
+      }
+    }
 
     const wires = state.wires;
     const used: Readonly<Record<string, boolean>> = {

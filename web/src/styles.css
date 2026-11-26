@@ -867,6 +867,24 @@ kbd {
   min-width: 68rem;
 }
 
+/* Doble emisión: una vía debajo de otra, separadas por una línea fina. */
+.dp-pipeline + .dp-pipeline {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+}
+
+.dp-lane {
+  font-size: 12px;
+  font-weight: 600;
+  fill: var(--fg);
+}
+
+/* Operando que llega adelantado de la otra vía: su cable no está en este diagrama. */
+.dp-source[data-cross='true'] {
+  fill: var(--fg);
+}
+
 .dp-stage-text {
   font-size: 11px;
   fill: var(--fg);

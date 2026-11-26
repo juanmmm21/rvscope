@@ -25,23 +25,24 @@ export function describeCycle(state: SingleCycleState): string {
   return `Último ciclo: ${parts.join(' · ')}.`;
 }
 
-export type DatapathKind = 'single' | 'pipeline' | 'none';
+export type DatapathKind = 'single' | 'pipeline';
 
-// Qué diagrama le toca a un modelo; la doble emisión aún no tiene el suyo.
+// Qué diagrama le toca a un modelo: los segmentados, uno de 5 etapas por vía.
 export function datapathKind(model: ModelInfo): DatapathKind {
-  if (!model.pipelined) {
-    return 'single';
-  }
-  return model.lanes === 1 ? 'pipeline' : 'none';
+  return model.pipelined ? 'pipeline' : 'single';
 }
 
-// Panel de la ruta de datos: un diagrama por forma de procesador. El de 5 etapas se crea al
-// pedirlo y se rehace si cambia el forwarding, que añade o quita piezas.
+const LANE_ROLES = ['la más antigua', 'la más joven'];
+
+// Panel de la ruta de datos: un diagrama por forma de procesador. Los de 5 etapas se crean al
+// pedirlos y se rehacen si cambia el forwarding (añade o quita piezas) o el número de vías.
+// Con dos vías se apilan: cada una tiene su ALU y sus cables, y el PC, el banco de registros
+// (con puertos para las dos) y el único puerto de memoria se reparten entre ellas.
 export class DatapathPanel {
   readonly #elements: DatapathElements;
   readonly #registers: readonly RegisterInfo[];
   #single: SingleCycleDiagram | null = null;
-  #pipeline: PipelineDiagram | null = null;
+  #pipeline: { forwarding: boolean; diagrams: PipelineDiagram[] } | null = null;
 
   constructor(elements: DatapathElements, registers: readonly RegisterInfo[]) {
     this.#elements = elements;
@@ -49,22 +50,25 @@ export class DatapathPanel {
   }
 
   render(model: ModelInfo, snapshot: Snapshot | null): void {
-    const kind = datapathKind(model);
-    this.#elements.section.hidden = kind === 'none';
-    if (kind === 'single') {
-      const diagram = this.#show(this.#singleDiagram());
+    if (datapathKind(model) === 'single') {
+      const diagram = this.#singleDiagram();
+      this.#show([diagram]);
       const state = singleCycleState(
         snapshot === null ? null : singleCycleSlot(snapshot),
         this.#registers,
       );
       diagram.update(state);
       this.#elements.caption.textContent = describeCycle(state);
-    } else if (kind === 'pipeline') {
-      const diagram = this.#show(this.#pipelineDiagram(model.forwarding));
-      const state = pipelineState(snapshot, this.#registers);
-      diagram.update(state);
-      this.#elements.caption.textContent = describePipeline(state);
+      return;
     }
+    const diagrams = this.#pipelineDiagrams(model.forwarding, model.lanes);
+    this.#show(diagrams);
+    const states = diagrams.map((diagram, lane) => {
+      const state = pipelineState(snapshot, this.#registers, lane);
+      diagram.update(state);
+      return state;
+    });
+    this.#elements.caption.textContent = describePipeline(...states);
   }
 
   #singleDiagram(): SingleCycleDiagram {
@@ -74,18 +78,30 @@ export class DatapathPanel {
     return this.#single;
   }
 
-  #pipelineDiagram(forwarding: boolean): PipelineDiagram {
-    if (this.#pipeline?.forwarding !== forwarding) {
-      this.#pipeline = this.#describe(
-        new PipelineDiagram(
-          forwarding
-            ? 'Ruta de datos del procesador de 5 etapas con forwarding'
-            : 'Ruta de datos del procesador de 5 etapas',
-          forwarding,
-        ),
-      );
+  #pipelineDiagrams(forwarding: boolean, lanes: number): PipelineDiagram[] {
+    const current = this.#pipeline;
+    if (current?.forwarding === forwarding && current.diagrams.length === lanes) {
+      return current.diagrams;
     }
-    return this.#pipeline;
+    const name = forwarding
+      ? 'Ruta de datos del procesador de 5 etapas con forwarding'
+      : 'Ruta de datos del procesador de 5 etapas';
+    const diagrams =
+      lanes === 1
+        ? [this.#describe(new PipelineDiagram(name, forwarding))]
+        : Array.from({ length: lanes }, (_, lane) => {
+            const title = `Vía ${String(lane)}`;
+            const subtitle = LANE_ROLES[lane] ?? '';
+            return this.#describe(
+              new PipelineDiagram(
+                `Ruta de datos de la doble emisión, ${title.toLowerCase()}, ${subtitle}`,
+                forwarding,
+                { index: lane, title, subtitle },
+              ),
+            );
+          });
+    this.#pipeline = { forwarding, diagrams };
+    return diagrams;
   }
 
   #describe<T extends { readonly element: SVGSVGElement }>(diagram: T): T {
@@ -93,11 +109,14 @@ export class DatapathPanel {
     return diagram;
   }
 
-  #show<T extends { readonly element: SVGSVGElement }>(diagram: T): T {
+  #show(diagrams: readonly { readonly element: SVGSVGElement }[]): void {
     const figure = this.#elements.figure;
-    if (figure.firstElementChild !== diagram.element) {
-      figure.replaceChildren(diagram.element);
+    const children = figure.children;
+    const same =
+      children.length === diagrams.length &&
+      diagrams.every((diagram, index) => children[index] === diagram.element);
+    if (!same) {
+      figure.replaceChildren(...diagrams.map((diagram) => diagram.element));
     }
-    return diagram;
   }
 }
