@@ -12,7 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use rv_asm::{Layout, Program, assemble_with};
-use rv_core::{ArchState, Processor, RunOutcome, SingleCycle, Trap};
+use rv_core::{ArchState, FiveStage, Hazards, Processor, RunOutcome, SingleCycle, Trap};
 
 /// El entorno oficial sitúa el código en 0x80000000; `auipc.S` depende de que una dirección
 /// 10000 bytes por debajo del código siga siendo válida.
@@ -26,9 +26,14 @@ const MAX_CYCLES: u64 = 1_000_000;
 
 type Factory = fn(&Program) -> Box<dyn Processor>;
 
-const MODELS: [(&str, Factory); 1] = [("un ciclo", |program| {
-    Box::new(SingleCycle::new(program).unwrap())
-})];
+const MODELS: [(&str, Factory); 2] = [
+    ("un ciclo", |program| {
+        Box::new(SingleCycle::new(program).unwrap())
+    }),
+    ("5 etapas con burbujas", |program| {
+        Box::new(FiveStage::new(program, Hazards::Stall).unwrap())
+    }),
+];
 
 fn sources(suite: &str) -> Vec<PathBuf> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
