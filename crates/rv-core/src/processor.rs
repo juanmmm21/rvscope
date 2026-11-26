@@ -7,6 +7,7 @@ use thiserror::Error;
 use crate::memory::{AccessKind, MemoryError, Width};
 use crate::state::ArchState;
 use crate::syscall::Console;
+use crate::view::PipelineView;
 
 /// Motivo por el que el procesador se detiene. La instrucción que lo provoca no se retira:
 /// el estado queda como justo antes de ejecutarla.
@@ -69,10 +70,26 @@ pub struct Retired {
     pub data_access: Option<DataAccess>,
 }
 
+/// Contadores de la ejecución. Los ciclos en que el programa espera entrada no cuentan, ni
+/// tampoco el ciclo en que una excepción para el procesador sin retirar nada.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Stats {
     pub cycles: u64,
     pub retired: u64,
+    /// Ciclos en que la unidad de riesgos ha retenido una instrucción en ID (carga-uso con
+    /// forwarding, cualquier dependencia sin él). Los vaciados no cuentan aquí.
+    pub stalls: u64,
+    /// Instrucciones buscadas que un salto ha descartado.
+    pub flushed: u64,
+    /// Ciclos en que se emitieron dos instrucciones a la vez (solo en la doble emisión).
+    pub dual_issues: u64,
+}
+
+impl Stats {
+    /// Ciclos por instrucción retirada; `None` si aún no se ha retirado ninguna.
+    pub fn cpi(&self) -> Option<f64> {
+        (self.retired > 0).then(|| self.cycles as f64 / self.retired as f64)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -95,6 +112,10 @@ pub trait Processor {
     fn stats(&self) -> Stats;
 
     fn halt(&self) -> Option<Halt>;
+
+    /// Lo que hizo cada etapa en el último ciclo contado. Al pararse queda solo la etapa
+    /// donde se retira, con la instrucción que ha terminado o fallado.
+    fn view(&self) -> &PipelineView;
 
     /// Consola del programa, para darle entrada (la salida se lee en `state().console`).
     fn console_mut(&mut self) -> &mut Console;

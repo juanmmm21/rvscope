@@ -10,6 +10,7 @@ use crate::memory::Memory;
 use crate::processor::{DataAccess, Halt, RegisterWrite, Retired, Trap};
 use crate::state::{ArchState, Registers};
 use crate::syscall::{EcallEffect, ecall};
+use crate::view::{Progress, Slot, SlotState, Stage};
 
 /// Registro de segmentación del que EX ha tomado un operando en vez del valor leído en ID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -54,30 +55,51 @@ pub(crate) struct Uop {
 }
 
 impl Latch<Fetched> {
-    pub(crate) fn pc(&self) -> Option<u32> {
+    /// Hueco de IF con la palabra buscada.
+    pub(crate) fn slot(&self, state: SlotState) -> Option<Slot> {
         match self {
             Latch::Bubble => None,
-            Latch::Fault(halt) => Some(halt.pc),
-            Latch::Holds(fetched) => Some(fetched.pc),
+            Latch::Fault(halt) => Some(Slot::fault(halt.pc, halt.trap, state)),
+            Latch::Holds(fetched) => Some(Slot::fetched(fetched.pc, fetched.word, state)),
         }
     }
 }
 
 impl Latch<Uop> {
+    /// Hueco de `stage` con lo que la instrucción lleva al salir de ella.
+    pub(crate) fn slot(
+        &self,
+        stage: Stage,
+        state: SlotState,
+        bypasses: [Option<Bypass>; 2],
+    ) -> Option<Slot> {
+        match self {
+            Latch::Bubble => None,
+            Latch::Fault(halt) => Some(Slot::fault(halt.pc, halt.trap, state)),
+            Latch::Holds(uop) => Some(Slot::decoded(
+                stage,
+                state,
+                Progress {
+                    pc: uop.pc,
+                    word: uop.word,
+                    instruction: uop.instruction,
+                    operands: [uop.rs1, uop.rs2],
+                    next_pc: uop.next_pc,
+                    result: uop.result,
+                    address: uop.address,
+                    data_access: uop.data_access,
+                },
+                bypasses,
+            )),
+        }
+    }
+
     /// Lo que impide buscar instrucciones nuevas: una excepción o una `ecall` en vuelo.
     pub(crate) fn blocks_fetch(&self) -> bool {
         match self {
             Latch::Bubble => false,
             Latch::Fault(_) => true,
             Latch::Holds(uop) => uop.operation == Operation::Ecall,
-        }
-    }
-
-    pub(crate) fn pc(&self) -> Option<u32> {
-        match self {
-            Latch::Bubble => None,
-            Latch::Fault(halt) => Some(halt.pc),
-            Latch::Holds(uop) => Some(uop.pc),
         }
     }
 

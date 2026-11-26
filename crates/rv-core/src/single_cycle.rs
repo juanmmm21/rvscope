@@ -9,18 +9,24 @@ use crate::map::MapError;
 use crate::processor::{Halt, Processor, RegisterWrite, Retired, Stats, Trap};
 use crate::state::ArchState;
 use crate::syscall::{Console, EcallEffect, ecall};
+use crate::view::{PipelineView, Progress, Slot, SlotState, Stage};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SingleCycle {
     state: ArchState,
     stats: Stats,
+    view: PipelineView,
     halt: Option<Halt>,
     awaiting_input: bool,
 }
 
 /// Lo que deja un ciclo que no ha fallado.
 enum Executed {
-    Retired { retired: Retired, exit: Option<i32> },
+    Retired {
+        retired: Retired,
+        progress: Progress,
+        exit: Option<i32>,
+    },
     AwaitingInput,
 }
 
@@ -34,9 +40,16 @@ impl SingleCycle {
         SingleCycle {
             state,
             stats: Stats::default(),
+            view: PipelineView::empty(&[Stage::Single], 1),
             halt: None,
             awaiting_input: false,
         }
+    }
+
+    fn record(&mut self, slot: Slot) {
+        self.view = PipelineView::empty(&[Stage::Single], 1);
+        self.view.cycle = self.stats.cycles;
+        self.view.stages[0].lanes[0] = Some(slot);
     }
 
     /// Ejecuta la instrucción de `pc`. Si algo falla, el estado no se toca: primero se calcula
@@ -83,6 +96,16 @@ impl SingleCycle {
         }
         state.pc = execution.next_pc;
         Ok(Executed::Retired {
+            progress: Progress {
+                pc,
+                word,
+                instruction,
+                operands: [rs1, rs2],
+                next_pc: execution.next_pc,
+                result,
+                address: execution.address,
+                data_access,
+            },
             retired: Retired {
                 pc,
                 word,
@@ -113,6 +136,10 @@ impl Processor for SingleCycle {
         self.halt
     }
 
+    fn view(&self) -> &PipelineView {
+        &self.view
+    }
+
     fn console_mut(&mut self) -> &mut Console {
         &mut self.state.console
     }
@@ -129,9 +156,19 @@ impl Processor for SingleCycle {
         let executed = self.execute();
         self.awaiting_input = matches!(executed, Ok(Executed::AwaitingInput));
         match executed {
-            Ok(Executed::Retired { retired, exit }) => {
+            Ok(Executed::Retired {
+                retired,
+                progress,
+                exit,
+            }) => {
                 self.stats.cycles += 1;
                 self.stats.retired += 1;
+                let mut slot = Slot::decoded(Stage::Single, SlotState::Active, progress, [None; 2]);
+                slot.retire(&retired);
+                if let Some(code) = exit {
+                    slot.trap = Some(Trap::Exited { code });
+                }
+                self.record(slot);
                 if let Some(code) = exit {
                     self.halt = Some(Halt {
                         pc,
@@ -142,6 +179,14 @@ impl Processor for SingleCycle {
             }
             Ok(Executed::AwaitingInput) => Vec::new(),
             Err(trap) => {
+                // La instrucción que falla no deja nada calculado: se enseña con lo que se
+                // pueda buscar y decodificar de ella.
+                let mut slot = match self.state.memory.fetch(pc) {
+                    Ok(word) => Slot::fetched(pc, word, SlotState::Active),
+                    Err(_) => Slot::fault(pc, trap, SlotState::Active),
+                };
+                slot.trap = Some(trap);
+                self.record(slot);
                 self.halt = Some(Halt { pc, trap });
                 Vec::new()
             }
@@ -273,7 +318,8 @@ mod tests {
             cpu.stats(),
             Stats {
                 cycles: 3,
-                retired: 3
+                retired: 3,
+                ..Stats::default()
             }
         );
     }

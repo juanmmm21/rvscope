@@ -10,6 +10,7 @@ mod processor;
 mod single_cycle;
 mod state;
 mod syscall;
+mod view;
 
 pub use dual_issue::DualIssue;
 pub use exec::{AluOp, AluSource, BranchCond, LoadOp, Operation};
@@ -24,3 +25,4 @@ pub use processor::{DataAccess, Halt, Processor, RegisterWrite, Retired, RunOutc
 pub use single_cycle::SingleCycle;
 pub use state::{ArchState, Registers};
 pub use syscall::{Console, EcallEffect, SYSCALLS, SyscallInfo, SyscallKind, ecall};
+pub use view::{Control, Operand, PipelineView, Slot, SlotState, Stage, StageView, WriteSource};

@@ -16,6 +16,7 @@ use crate::pipeline::{
 use crate::processor::{Halt, Processor, Retired, Stats, Trap};
 use crate::state::ArchState;
 use crate::syscall::Console;
+use crate::view::{PipelineView, Slot, SlotState, Stage};
 
 /// Unidad de riesgos de datos: lo único que cambia entre los modelos de cinco etapas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,11 +36,7 @@ pub struct FiveStage {
     hazards: Hazards,
     state: ArchState,
     stats: Stats,
-    /// Burbujas que ha metido la unidad de riesgos (los vaciados por saltos no cuentan).
-    stalls: u64,
-    /// De dónde tomó EX cada operando (`rs1`, `rs2`) en el último ciclo; `None` es el valor
-    /// leído en ID.
-    bypasses: [Option<Bypass>; 2],
+    view: PipelineView,
     halt: Option<Halt>,
     awaiting_input: bool,
     /// `pc` de búsqueda; el arquitectónico es `state.pc`, que avanza al retirar.
@@ -48,7 +45,6 @@ pub struct FiveStage {
     id_ex: Latch<Uop>,
     ex_mem: Latch<Uop>,
     mem_wb: Latch<Uop>,
-    stage_pcs: [Option<u32>; 5],
 }
 
 impl FiveStage {
@@ -66,37 +62,18 @@ impl FiveStage {
             fetch_pc: state.pc,
             state,
             stats: Stats::default(),
-            stalls: 0,
-            bypasses: [None; 2],
+            view: PipelineView::empty(&Stage::PIPELINE, 1),
             halt: None,
             awaiting_input: false,
             if_id: Latch::Bubble,
             id_ex: Latch::Bubble,
             ex_mem: Latch::Bubble,
             mem_wb: Latch::Bubble,
-            stage_pcs: [None; 5],
         }
-    }
-
-    /// `pc` de la instrucción que ha pasado por cada etapa (IF, ID, EX, MEM, WB) en el último
-    /// ciclo, incluidas las que un salto acaba de vaciar; `None` es una burbuja.
-    pub fn stage_pcs(&self) -> [Option<u32>; 5] {
-        self.stage_pcs
     }
 
     pub fn hazards(&self) -> Hazards {
         self.hazards
-    }
-
-    /// Ciclos en que la unidad de riesgos ha retenido una instrucción en ID.
-    pub fn stalls(&self) -> u64 {
-        self.stalls
-    }
-
-    /// Operandos que EX tomó de un registro de segmentación en el último ciclo (`rs1`, `rs2`);
-    /// solo hay alguno con `Hazards::Forward`.
-    pub fn bypasses(&self) -> [Option<Bypass>; 2] {
-        self.bypasses
     }
 
     /// Cierto si la instrucción de ID tiene que esperar. Sin forwarding, si lee un registro que
@@ -138,9 +115,25 @@ impl FiveStage {
         (read, None)
     }
 
-    fn stop(&mut self, halt: Halt) {
+    /// Vista del ciclo que acaba de terminar, con un hueco por etapa de IF a WB.
+    fn record(&mut self, slots: [Option<Slot>; 5]) {
+        self.view = PipelineView::empty(&Stage::PIPELINE, 1);
+        self.view.cycle = self.stats.cycles;
+        for (stage, slot) in self.view.stages.iter_mut().zip(slots) {
+            stage.lanes[0] = slot;
+        }
+    }
+
+    /// Para el procesador. En la vista queda solo WB con la instrucción que termina o falla.
+    fn stop(&mut self, halt: Halt, retiring: Option<Slot>) {
+        let retiring = retiring.map(|mut slot| {
+            if slot.pc == halt.pc {
+                slot.trap = Some(halt.trap);
+            }
+            slot
+        });
+        self.record([None, None, None, None, retiring]);
         self.halt = Some(halt);
-        self.bypasses = [None; 2];
         self.if_id = Latch::Bubble;
         self.id_ex = Latch::Bubble;
         self.ex_mem = Latch::Bubble;
@@ -204,6 +197,10 @@ impl Processor for FiveStage {
         self.halt
     }
 
+    fn view(&self) -> &PipelineView {
+        &self.view
+    }
+
     fn console_mut(&mut self) -> &mut Console {
         &mut self.state.console
     }
@@ -218,19 +215,14 @@ impl Processor for FiveStage {
         if self.halt.is_some() {
             return Vec::new();
         }
-        let older_pcs = [
-            self.if_id.pc(),
-            self.id_ex.pc(),
-            self.ex_mem.pc(),
-            self.mem_wb.pc(),
-        ];
+        let retiring = self.mem_wb.slot(Stage::Wb, SlotState::Active, [None; 2]);
 
         let mut retired = Vec::new();
         let mut exit = None;
         match self.mem_wb {
             Latch::Bubble => {}
             Latch::Fault(halt) => {
-                self.stop(halt);
+                self.stop(halt, retiring);
                 return Vec::new();
             }
             Latch::Holds(uop) => match write_back(&mut self.state, &uop) {
@@ -246,7 +238,7 @@ impl Processor for FiveStage {
                     return Vec::new();
                 }
                 Err(trap) => {
-                    self.stop(Halt { pc: uop.pc, trap });
+                    self.stop(Halt { pc: uop.pc, trap }, retiring);
                     return Vec::new();
                 }
             },
@@ -254,34 +246,57 @@ impl Processor for FiveStage {
         self.awaiting_input = false;
         self.stats.cycles += 1;
         self.stats.retired += retired.len() as u64;
+        let retiring = retiring.map(|mut slot| {
+            if let Some(entry) = retired.first() {
+                slot.retire(entry);
+            }
+            slot
+        });
         if let Some((pc, code)) = exit {
-            self.stage_pcs = [None, None, None, None, older_pcs[3]];
-            self.stop(Halt {
-                pc,
-                trap: Trap::Exited { code },
-            });
+            self.stop(
+                Halt {
+                    pc,
+                    trap: Trap::Exited { code },
+                },
+                retiring,
+            );
             return retired;
         }
 
         let mem_wb = memory_stage(&mut self.state.memory, self.ex_mem);
         let (ex_mem, bypasses, redirect) = self.execute_stage();
-        self.bypasses = bypasses;
-        // En un ciclo de vaciado IF e ID también trabajan (en el camino equivocado) y se ve,
-        // aunque lo que hacen se descarta.
         let fetching_pc = self.fetch_pc;
-        let (id_ex, if_id, fetched) = match redirect {
+        let (id_ex, if_id, decoding, fetching) = match redirect {
             Some(target) => {
                 self.fetch_pc = target;
-                (Latch::Bubble, Latch::Bubble, !mem_wb.blocks_fetch())
+                // En un ciclo de vaciado IF e ID también trabajan, en el camino equivocado, y
+                // la vista lo enseña aunque lo que hacen se descarte.
+                let decoding = decode(self.if_id, &self.state.registers).slot(
+                    Stage::Id,
+                    SlotState::Flushed,
+                    [None; 2],
+                );
+                let fetching = if mem_wb.blocks_fetch() {
+                    None
+                } else {
+                    fetch(&self.state.memory, fetching_pc).slot(SlotState::Flushed)
+                };
+                self.stats.flushed += u64::from(decoding.is_some()) + u64::from(fetching.is_some());
+                (Latch::Bubble, Latch::Bubble, decoding, fetching)
             }
             None => {
                 let decoded = decode(self.if_id, &self.state.registers);
                 if self.must_stall(&decoded) {
                     // La instrucción se queda en IF/ID y la de IF espera detrás; en EX entra
                     // una burbuja. `x0` nunca es destino, así que no frena a nadie.
-                    self.stalls += 1;
-                    let waiting = !(ex_mem.blocks_fetch() || mem_wb.blocks_fetch());
-                    (Latch::Bubble, self.if_id, waiting)
+                    self.stats.stalls += 1;
+                    let decoding = decoded.slot(Stage::Id, SlotState::Stalled, [None; 2]);
+                    let fetching = if ex_mem.blocks_fetch() || mem_wb.blocks_fetch() {
+                        None
+                    } else {
+                        fetch(&self.state.memory, fetching_pc).slot(SlotState::Stalled)
+                    };
+                    (Latch::Bubble, self.if_id, decoding, fetching)
                 } else {
                     let blocked =
                         decoded.blocks_fetch() || ex_mem.blocks_fetch() || mem_wb.blocks_fetch();
@@ -290,17 +305,18 @@ impl Processor for FiveStage {
                     } else {
                         self.fetch_stage()
                     };
-                    (decoded, if_id, !blocked)
+                    let decoding = decoded.slot(Stage::Id, SlotState::Active, [None; 2]);
+                    (decoded, if_id, decoding, if_id.slot(SlotState::Active))
                 }
             }
         };
-        self.stage_pcs = [
-            fetched.then_some(fetching_pc),
-            older_pcs[0],
-            older_pcs[1],
-            older_pcs[2],
-            older_pcs[3],
-        ];
+        self.record([
+            fetching,
+            decoding,
+            ex_mem.slot(Stage::Ex, SlotState::Active, bypasses),
+            mem_wb.slot(Stage::Mem, SlotState::Active, [None; 2]),
+            retiring,
+        ]);
         self.mem_wb = mem_wb;
         self.ex_mem = ex_mem;
         self.id_ex = id_ex;
@@ -316,10 +332,24 @@ mod tests {
     use crate::memory::{AccessKind, MemoryError, Width};
     use crate::processor::RunOutcome;
     use crate::single_cycle::SingleCycle;
+    use crate::view::Operand;
     use rv_isa::DecodeError;
 
     fn program(source: &str) -> Program {
         rv_asm::assemble(source).unwrap()
+    }
+
+    /// `pc` de lo que hay en cada etapa (IF, ID, EX, MEM, WB) según la vista.
+    fn pcs(cpu: &FiveStage) -> [Option<u32>; 5] {
+        let stages = &cpu.view().stages;
+        std::array::from_fn(|stage| stages[stage].lanes[0].map(|slot| slot.pc))
+    }
+
+    /// De dónde tomó EX `rs1` y `rs2` en el último ciclo.
+    fn bypasses(cpu: &FiveStage) -> [Option<Bypass>; 2] {
+        let ex = cpu.view().stages[2].lanes[0];
+        let bypass = |operand: Option<Operand>| operand.and_then(|operand| operand.bypass);
+        ex.map_or([None; 2], |slot| [bypass(slot.rs1), bypass(slot.rs2)])
     }
 
     fn boot(source: &str) -> FiveStage {
@@ -409,12 +439,9 @@ mod tests {
         for _ in 0..4 {
             assert!(cpu.step().is_empty());
         }
-        assert_eq!(cpu.stage_pcs(), [Some(12), Some(8), Some(4), Some(0), None]);
+        assert_eq!(pcs(&cpu), [Some(12), Some(8), Some(4), Some(0), None]);
         assert_eq!(cpu.step()[0].pc, 0);
-        assert_eq!(
-            cpu.stage_pcs(),
-            [Some(16), Some(12), Some(8), Some(4), Some(0)]
-        );
+        assert_eq!(pcs(&cpu), [Some(16), Some(12), Some(8), Some(4), Some(0)]);
         assert_eq!(
             cpu.run(100),
             RunOutcome::Halted(Halt {
@@ -426,7 +453,8 @@ mod tests {
             cpu.stats(),
             Stats {
                 cycles: 8,
-                retired: 4
+                retired: 4,
+                ..Stats::default()
             }
         );
         assert_eq!(cpu.state().pc, 16);
@@ -477,12 +505,9 @@ mod tests {
         for _ in 0..6 {
             cpu.step();
         }
-        assert_eq!(
-            cpu.stage_pcs(),
-            [Some(20), Some(16), Some(12), Some(8), Some(4)]
-        );
+        assert_eq!(pcs(&cpu), [Some(20), Some(16), Some(12), Some(8), Some(4)]);
         cpu.step();
-        assert_eq!(cpu.stage_pcs(), [Some(24), None, None, Some(12), Some(8)]);
+        assert_eq!(pcs(&cpu), [Some(24), None, None, Some(12), Some(8)]);
     }
 
     #[test]
@@ -616,19 +641,19 @@ mod tests {
         }
         // addi espera en ID mientras li está en EX y en MEM; IF la sigue reteniendo detrás.
         cpu.step();
-        assert_eq!(cpu.stage_pcs(), [Some(8), Some(4), Some(0), None, None]);
+        assert_eq!(pcs(&cpu), [Some(8), Some(4), Some(0), None, None]);
         cpu.step();
-        assert_eq!(cpu.stage_pcs(), [Some(8), Some(4), None, Some(0), None]);
+        assert_eq!(pcs(&cpu), [Some(8), Some(4), None, Some(0), None]);
         cpu.step();
-        assert_eq!(cpu.stage_pcs(), [Some(8), Some(4), None, None, Some(0)]);
+        assert_eq!(pcs(&cpu), [Some(8), Some(4), None, None, Some(0)]);
         cpu.run(100);
         assert_eq!(read(&cpu, "a1"), 6);
-        assert_eq!(cpu.stalls(), 2);
+        assert_eq!(cpu.stats().stalls, 2);
         // 2 retiradas + 4 de llenado + 2 burbujas; sin detección serían 6.
         assert_eq!(cpu.stats().cycles, 8);
         let mut unchecked = boot(source);
         unchecked.run(100);
-        assert_eq!((unchecked.stats().cycles, unchecked.stalls()), (6, 0));
+        assert_eq!((unchecked.stats().cycles, unchecked.stats().stalls), (6, 0));
     }
 
     #[test]
@@ -636,10 +661,10 @@ mod tests {
         // Una instrucción en medio: solo falta una burbuja. Dos: ninguna.
         let mut cpu = boot_stalling("li a0, 5\nnop\naddi a1, a0, 1\nebreak\n");
         cpu.run(100);
-        assert_eq!((read(&cpu, "a1"), cpu.stalls()), (6, 1));
+        assert_eq!((read(&cpu, "a1"), cpu.stats().stalls), (6, 1));
         let mut cpu = boot_stalling("li a0, 5\nnop\nnop\naddi a1, a0, 1\nebreak\n");
         cpu.run(100);
-        assert_eq!((read(&cpu, "a1"), cpu.stalls()), (6, 0));
+        assert_eq!((read(&cpu, "a1"), cpu.stats().stalls), (6, 0));
     }
 
     #[test]
@@ -651,7 +676,7 @@ mod tests {
         );
         cpu.run(100);
         // Solo el sw espera al lui de delante (dos burbujas).
-        assert_eq!(cpu.stalls(), 2);
+        assert_eq!(cpu.stats().stalls, 2);
         assert_eq!(read(&cpu, "a0"), 0);
     }
 
@@ -683,7 +708,7 @@ mod tests {
         let cpu = assert_model_matches_single_cycle(HAZARD_FREE, Hazards::Stall);
         let mut unchecked = boot(HAZARD_FREE);
         unchecked.run(10_000);
-        assert_eq!((cpu.stalls(), cpu.stats()), (0, unchecked.stats()));
+        assert_eq!((cpu.stats().stalls, cpu.stats()), (0, unchecked.stats()));
 
         assert_model_matches_single_cycle("li a0, 1\nlw a0, 2(sp)\nli a1, 7\n", Hazards::Stall);
         assert_model_matches_single_cycle("li t0, 6\njalr ra, 0(t0)\nnop\n", Hazards::Stall);
@@ -715,22 +740,22 @@ mod tests {
             cpu.step();
         }
         // li está en MEM y addi a1 en EX: a0 llega desde EX/MEM.
-        assert_eq!(cpu.stage_pcs(), [Some(8), Some(4), Some(0), None, None]);
-        assert_eq!(cpu.bypasses(), [None, None]);
+        assert_eq!(pcs(&cpu), [Some(8), Some(4), Some(0), None, None]);
+        assert_eq!(bypasses(&cpu), [None, None]);
         cpu.step();
-        assert_eq!(cpu.bypasses(), [Some(Bypass::ExMem), None]);
+        assert_eq!(bypasses(&cpu), [Some(Bypass::ExMem), None]);
         cpu.step();
         // addi a2 toma a0 de li, que está en WB.
-        assert_eq!(cpu.bypasses(), [Some(Bypass::MemWb), None]);
+        assert_eq!(bypasses(&cpu), [Some(Bypass::MemWb), None]);
         cpu.step();
         // add a3 toma a1 de WB y a2 de MEM.
-        assert_eq!(cpu.bypasses(), [Some(Bypass::MemWb), Some(Bypass::ExMem)]);
+        assert_eq!(bypasses(&cpu), [Some(Bypass::MemWb), Some(Bypass::ExMem)]);
         cpu.run(100);
         assert_eq!(
             (read(&cpu, "a1"), read(&cpu, "a2"), read(&cpu, "a3")),
             (6, 7, 13)
         );
-        assert_eq!(cpu.stalls(), 0);
+        assert_eq!(cpu.stats().stalls, 0);
         // 4 retiradas + 4 de llenado: como un programa sin dependencias.
         assert_eq!(cpu.stats().cycles, 8);
     }
@@ -758,28 +783,22 @@ mod tests {
             cpu.step();
         }
         // lw en EX y addi esperando en ID.
-        assert_eq!(
-            cpu.stage_pcs(),
-            [Some(16), Some(12), Some(8), Some(4), Some(0)]
-        );
+        assert_eq!(pcs(&cpu), [Some(16), Some(12), Some(8), Some(4), Some(0)]);
         cpu.step();
-        assert_eq!(
-            cpu.stage_pcs(),
-            [Some(16), Some(12), None, Some(8), Some(4)]
-        );
+        assert_eq!(pcs(&cpu), [Some(16), Some(12), None, Some(8), Some(4)]);
         cpu.step();
         // El valor cargado llega desde MEM/WB.
-        assert_eq!(cpu.bypasses(), [Some(Bypass::MemWb), None]);
+        assert_eq!(bypasses(&cpu), [Some(Bypass::MemWb), None]);
         cpu.run(100);
         assert_eq!(read(&cpu, "a1"), 8);
-        assert_eq!(cpu.stalls(), 1);
+        assert_eq!(cpu.stats().stalls, 1);
         assert_eq!(cpu.stats().cycles, 4 + 4 + 1);
 
         // Con una instrucción en medio no hace falta esperar.
         let mut cpu =
             boot_forwarding("li t0, 7\nsw t0, -4(sp)\nlw a0, -4(sp)\nnop\nmv a1, a0\nebreak\n");
         cpu.run(100);
-        assert_eq!((read(&cpu, "a1"), cpu.stalls()), (7, 0));
+        assert_eq!((read(&cpu, "a1"), cpu.stats().stalls), (7, 0));
     }
 
     #[test]
@@ -808,7 +827,7 @@ mod tests {
         let stalling = assert_model_matches_single_cycle(factorial, Hazards::Stall);
         assert_eq!(read(&forwarding, "a0"), 720);
         assert!(forwarding.stats().cycles < stalling.stats().cycles);
-        assert!(forwarding.stalls() < stalling.stalls());
+        assert!(forwarding.stats().stalls < stalling.stats().stalls);
 
         let cpu = assert_model_matches_single_cycle(HAZARD_FREE, Hazards::Forward);
         let mut unchecked = boot(HAZARD_FREE);
@@ -842,7 +861,7 @@ mod tests {
                 FiveStage::new(&program("li a0, 5\naddi a1, a0, 1\nebreak\n"), hazards).unwrap();
             for _ in 0..10 {
                 cpu.step();
-                assert_eq!(cpu.bypasses(), [None, None]);
+                assert_eq!(bypasses(&cpu), [None, None]);
             }
         }
     }

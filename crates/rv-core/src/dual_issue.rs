@@ -14,6 +14,7 @@ use crate::pipeline::{
 use crate::processor::{Halt, Processor, Retired, Stats, Trap};
 use crate::state::ArchState;
 use crate::syscall::Console;
+use crate::view::{PipelineView, Slot, SlotState, Stage};
 
 /// Lo que lleva cada registro de segmentación: un hueco por vía.
 type Lanes<T> = [Latch<T>; 2];
@@ -24,12 +25,7 @@ const EMPTY: Lanes<Uop> = [Latch::Bubble, Latch::Bubble];
 pub struct DualIssue {
     state: ArchState,
     stats: Stats,
-    /// Ciclos en que una carga-uso ha retenido la instrucción más antigua de ID.
-    stalls: u64,
-    /// Ciclos en que se emitieron dos instrucciones.
-    dual_issues: u64,
-    /// De dónde tomó EX cada operando (`rs1`, `rs2`) de cada vía en el último ciclo.
-    bypasses: [[Option<Bypass>; 2]; 2],
+    view: PipelineView,
     halt: Option<Halt>,
     awaiting_input: bool,
     /// `pc` de la siguiente búsqueda: el de detrás de lo último que hay en IF/ID.
@@ -39,7 +35,6 @@ pub struct DualIssue {
     id_ex: Lanes<Uop>,
     ex_mem: Lanes<Uop>,
     mem_wb: Lanes<Uop>,
-    stage_pcs: [[Option<u32>; 2]; 5],
 }
 
 /// Cierto si es un salto, `jal` o `jalr`: cierra el par en que se emite.
@@ -76,39 +71,14 @@ impl DualIssue {
             fetch_pc: state.pc,
             state,
             stats: Stats::default(),
-            stalls: 0,
-            dual_issues: 0,
-            bypasses: [[None; 2]; 2],
+            view: PipelineView::empty(&Stage::PIPELINE, 2),
             halt: None,
             awaiting_input: false,
             if_id: [Latch::Bubble, Latch::Bubble],
             id_ex: EMPTY,
             ex_mem: EMPTY,
             mem_wb: EMPTY,
-            stage_pcs: [[None; 2]; 5],
         }
-    }
-
-    /// `pc` de lo que ha pasado por cada etapa (IF, ID, EX, MEM, WB) y vía en el último ciclo.
-    /// En IF solo aparece lo que se buscó y se quedó en IF/ID.
-    pub fn stage_pcs(&self) -> [[Option<u32>; 2]; 5] {
-        self.stage_pcs
-    }
-
-    /// Ciclos en que la burbuja de carga-uso retuvo la instrucción más antigua.
-    pub fn stalls(&self) -> u64 {
-        self.stalls
-    }
-
-    /// Ciclos en que se emitieron dos instrucciones a la vez.
-    pub fn dual_issues(&self) -> u64 {
-        self.dual_issues
-    }
-
-    /// Operandos (`rs1`, `rs2`) que cada vía de EX tomó de un registro de segmentación en el
-    /// último ciclo.
-    pub fn bypasses(&self) -> [[Option<Bypass>; 2]; 2] {
-        self.bypasses
     }
 
     /// Valor de `reg` para EX: el de la instrucción más reciente de las que van delante y lo
@@ -178,9 +148,38 @@ impl DualIssue {
         if pairs { 2 } else { 1 }
     }
 
-    fn stop(&mut self, halt: Halt) {
+    /// Vista del ciclo que acaba de terminar: por etapa de IF a WB, un hueco por vía.
+    fn record(&mut self, slots: [[Option<Slot>; 2]; 5]) {
+        self.view = PipelineView::empty(&Stage::PIPELINE, 2);
+        self.view.cycle = self.stats.cycles;
+        for (stage, lanes) in self.view.stages.iter_mut().zip(slots) {
+            stage.lanes = lanes.to_vec();
+        }
+    }
+
+    /// Para el procesador. En la vista queda solo WB: lo que se ha retirado, la instrucción
+    /// que para y, si la que para es la de la vía 0, la de la vía 1 descartada.
+    fn stop(&mut self, halt: Halt, retiring: [Option<Slot>; 2]) {
+        let mut reached = true;
+        let retiring = retiring.map(|slot| {
+            slot.map(|mut slot| {
+                if !reached {
+                    slot.state = SlotState::Flushed;
+                } else if slot.pc == halt.pc {
+                    slot.trap = Some(halt.trap);
+                    reached = false;
+                }
+                slot
+            })
+        });
+        self.record([
+            [None, None],
+            [None, None],
+            [None, None],
+            [None, None],
+            retiring,
+        ]);
         self.halt = Some(halt);
-        self.bypasses = [[None; 2]; 2];
         self.if_id = [Latch::Bubble, Latch::Bubble];
         self.id_ex = EMPTY;
         self.ex_mem = EMPTY;
@@ -219,21 +218,21 @@ impl DualIssue {
 
     /// IF: rellena los huecos libres de la ventana detrás de lo que queda. Tras un fallo de
     /// búsqueda no se busca más: esa instrucción para el procesador si llega a WB.
-    fn fill_window(&mut self, remaining: &[Latch<Fetched>]) -> (Lanes<Fetched>, [Option<u32>; 2]) {
+    fn fill_window(&mut self, remaining: &[Latch<Fetched>]) -> (Lanes<Fetched>, [bool; 2]) {
         let mut window = [Latch::Bubble, Latch::Bubble];
-        let mut fetched_pcs = [None; 2];
+        let mut fetched = [false; 2];
         window[..remaining.len()].copy_from_slice(remaining);
         for slot in remaining.len()..2 {
             let pc = self.fetch_pc;
             let latch = fetch(&self.state.memory, pc);
             window[slot] = latch;
-            fetched_pcs[slot] = Some(pc);
+            fetched[slot] = true;
             match latch {
                 Latch::Holds(_) => self.fetch_pc = pc.wrapping_add(4),
                 Latch::Bubble | Latch::Fault(_) => break,
             }
         }
-        (window, fetched_pcs)
+        (window, fetched)
     }
 }
 
@@ -254,6 +253,10 @@ impl Processor for DualIssue {
         self.halt
     }
 
+    fn view(&self) -> &PipelineView {
+        &self.view
+    }
+
     fn console_mut(&mut self) -> &mut Console {
         &mut self.state.console
     }
@@ -268,30 +271,32 @@ impl Processor for DualIssue {
         if self.halt.is_some() {
             return Vec::new();
         }
-        let older_pcs = [
-            self.if_id.map(|latch| latch.pc()),
-            self.id_ex.map(|latch| latch.pc()),
-            self.ex_mem.map(|latch| latch.pc()),
-            self.mem_wb.map(|latch| latch.pc()),
-        ];
+        let retiring = self
+            .mem_wb
+            .map(|latch| latch.slot(Stage::Wb, SlotState::Active, [None; 2]));
 
         let Some((retired, halt)) = self.write_back_stage() else {
             self.awaiting_input = true;
             return Vec::new();
         };
         self.awaiting_input = false;
+        // El ciclo cuenta si algo se retira, aunque luego se pare.
+        if halt.is_none() || !retired.is_empty() {
+            self.stats.cycles += 1;
+            self.stats.retired += retired.len() as u64;
+        }
+        let retiring = retiring.map(|slot| {
+            slot.map(|mut slot| {
+                if let Some(entry) = retired.iter().find(|entry| entry.pc == slot.pc) {
+                    slot.retire(entry);
+                }
+                slot
+            })
+        });
         if let Some(halt) = halt {
-            // El ciclo cuenta si la vía 0 llegó a retirarse antes de parar.
-            if !retired.is_empty() {
-                self.stats.cycles += 1;
-                self.stats.retired += retired.len() as u64;
-                self.stage_pcs = [[None; 2], [None; 2], [None; 2], [None; 2], older_pcs[3]];
-            }
-            self.stop(halt);
+            self.stop(halt, retiring);
             return retired;
         }
-        self.stats.cycles += 1;
-        self.stats.retired += retired.len() as u64;
 
         // MEM: si la vía 0 falla, la 1 (más joven) no llega a tocar la memoria.
         let first = memory_stage(&mut self.state.memory, self.ex_mem[0]);
@@ -305,17 +310,28 @@ impl Processor for DualIssue {
         let (first, first_bypasses, first_redirect) = self.execute_lane(self.id_ex[0]);
         let (second, second_bypasses, second_redirect) = self.execute_lane(self.id_ex[1]);
         let ex_mem = [first, second];
-        self.bypasses = [first_bypasses, second_bypasses];
+        let executing = [
+            first.slot(Stage::Ex, SlotState::Active, first_bypasses),
+            second.slot(Stage::Ex, SlotState::Active, second_bypasses),
+        ];
         let redirect = first_redirect.or(second_redirect);
 
         let in_flight = ex_mem.iter().chain(&mem_wb).any(Latch::blocks_fetch);
-        let (id_ex, if_id, fetched_pcs) = match redirect {
+        let decoded = self.if_id.map(|latch| decode(latch, &self.state.registers));
+        let (id_ex, if_id, decoding, fetching) = match redirect {
             Some(target) => {
                 self.fetch_pc = target;
-                (EMPTY, [Latch::Bubble, Latch::Bubble], [None; 2])
+                let decoding =
+                    decoded.map(|latch| latch.slot(Stage::Id, SlotState::Flushed, [None; 2]));
+                self.stats.flushed += decoding.iter().flatten().count() as u64;
+                (
+                    EMPTY,
+                    [Latch::Bubble, Latch::Bubble],
+                    decoding,
+                    [None, None],
+                )
             }
             None => {
-                let decoded = self.if_id.map(|latch| decode(latch, &self.state.registers));
                 // Detrás de una `ecall` o de un fallo en vuelo no se emite nada: lo de detrás
                 // leería registros que la `ecall` aún puede cambiar.
                 let issued = if in_flight {
@@ -324,10 +340,19 @@ impl Processor for DualIssue {
                     self.issue_count(&decoded)
                 };
                 if issued == 0 && !in_flight && matches!(decoded[0], Latch::Holds(_)) {
-                    self.stalls += 1;
+                    self.stats.stalls += 1;
                 }
                 if issued == 2 {
-                    self.dual_issues += 1;
+                    self.stats.dual_issues += 1;
+                }
+                let mut decoding = [None, None];
+                for (lane, latch) in decoded.iter().enumerate() {
+                    let state = if lane < issued {
+                        SlotState::Active
+                    } else {
+                        SlotState::Stalled
+                    };
+                    decoding[lane] = latch.slot(Stage::Id, state, [None; 2]);
                 }
                 let mut id_ex = EMPTY;
                 id_ex[..issued].copy_from_slice(&decoded[..issued]);
@@ -340,20 +365,27 @@ impl Processor for DualIssue {
                 if blocked {
                     let mut window = [Latch::Bubble, Latch::Bubble];
                     window[..remaining.len()].copy_from_slice(&remaining);
-                    (id_ex, window, [None; 2])
+                    (id_ex, window, decoding, [None, None])
                 } else {
-                    let (window, fetched_pcs) = self.fill_window(&remaining);
-                    (id_ex, window, fetched_pcs)
+                    let (window, fetched) = self.fill_window(&remaining);
+                    let fetching = [0, 1].map(|lane| {
+                        if fetched[lane] {
+                            window[lane].slot(SlotState::Active)
+                        } else {
+                            None
+                        }
+                    });
+                    (id_ex, window, decoding, fetching)
                 }
             }
         };
-        self.stage_pcs = [
-            fetched_pcs,
-            older_pcs[0],
-            older_pcs[1],
-            older_pcs[2],
-            older_pcs[3],
-        ];
+        self.record([
+            fetching,
+            decoding,
+            executing,
+            mem_wb.map(|latch| latch.slot(Stage::Mem, SlotState::Active, [None; 2])),
+            retiring,
+        ]);
         self.mem_wb = mem_wb;
         self.ex_mem = ex_mem;
         self.id_ex = id_ex;
@@ -369,11 +401,29 @@ mod tests {
     use crate::memory::{AccessKind, MemoryError, Width};
     use crate::processor::RunOutcome;
     use crate::single_cycle::SingleCycle;
+    use crate::view::Operand;
 
     const EXIT: &str = "li a7, 10\necall\n";
 
     fn program(source: &str) -> Program {
         rv_asm::assemble(source).unwrap()
+    }
+
+    /// `pc` de lo que hay en cada etapa (IF, ID, EX, MEM, WB) y vía según la vista.
+    fn pcs(cpu: &DualIssue) -> [[Option<u32>; 2]; 5] {
+        let stages = &cpu.view().stages;
+        std::array::from_fn(|stage| {
+            std::array::from_fn(|lane| stages[stage].lanes[lane].map(|slot| slot.pc))
+        })
+    }
+
+    /// De dónde tomó EX `rs1` y `rs2` en cada vía en el último ciclo.
+    fn bypasses(cpu: &DualIssue) -> [[Option<Bypass>; 2]; 2] {
+        let ex = &cpu.view().stages[2];
+        let bypass = |operand: Option<Operand>| operand.and_then(|operand| operand.bypass);
+        std::array::from_fn(|lane| {
+            ex.lanes[lane].map_or([None; 2], |slot| [bypass(slot.rs1), bypass(slot.rs2)])
+        })
     }
 
     fn boot(source: &str) -> DualIssue {
@@ -422,7 +472,7 @@ mod tests {
                 break;
             }
             cpu.step();
-            let ex = cpu.stage_pcs()[2];
+            let ex = pcs(&cpu)[2];
             if ex != [None, None] {
                 groups.push(ex);
             }
@@ -434,7 +484,7 @@ mod tests {
     fn independent_instructions_issue_and_retire_in_pairs() {
         let source = format!("li a0, 1\nli a1, 2\nli a2, 3\nli a3, 4\nli a4, 5\nli a5, 6\n{EXIT}");
         let mut cpu = assert_matches_single_cycle(&source);
-        assert_eq!(cpu.dual_issues(), 3);
+        assert_eq!(cpu.stats().dual_issues, 3);
         assert_eq!(
             executed(&source),
             [
@@ -462,7 +512,7 @@ mod tests {
         let source = format!("li a0, 1\naddi a1, a0, 1\n{EXIT}");
         let cpu = assert_matches_single_cycle(&source);
         assert_eq!(read(&cpu, "a1"), 2);
-        assert_eq!(cpu.stalls(), 0);
+        assert_eq!(cpu.stats().stalls, 0);
         assert_eq!(
             executed(&source),
             [[Some(0), None], [Some(4), Some(8)], [Some(12), None]]
@@ -472,8 +522,8 @@ mod tests {
         for _ in 0..4 {
             cpu.step();
         }
-        assert_eq!(cpu.stage_pcs()[2], [Some(4), Some(8)]);
-        assert_eq!(cpu.bypasses(), [[Some(Bypass::ExMem), None], [None, None]]);
+        assert_eq!(pcs(&cpu)[2], [Some(4), Some(8)]);
+        assert_eq!(bypasses(&cpu), [[Some(Bypass::ExMem), None], [None, None]]);
     }
 
     #[test]
@@ -508,12 +558,12 @@ mod tests {
     fn load_use_costs_one_bubble_in_either_lane() {
         let source = format!("lw t0, 0(sp)\naddi t1, t0, 1\n{EXIT}");
         let cpu = assert_matches_single_cycle(&source);
-        assert_eq!(cpu.stalls(), 1);
+        assert_eq!(cpu.stats().stalls, 1);
 
         // La carga va en un par y quien la usa llega justo detrás: también espera.
         let paired = format!("li t2, 5\nlw t0, 0(sp)\naddi t1, t0, 1\nli a1, 2\n{EXIT}");
         let cpu = assert_matches_single_cycle(&paired);
-        assert_eq!(cpu.stalls(), 1);
+        assert_eq!(cpu.stats().stalls, 1);
         assert_eq!(
             executed(&paired)[..2],
             [[Some(0), Some(4)], [Some(8), Some(12)]]
@@ -599,7 +649,7 @@ mod tests {
         let mut scalar = FiveStage::new(&program(factorial), Hazards::Forward).unwrap();
         scalar.run(10_000);
         assert!(cpu.stats().cycles < scalar.stats().cycles);
-        assert!(cpu.dual_issues() > 0);
+        assert!(cpu.stats().dual_issues > 0);
     }
 
     #[test]
