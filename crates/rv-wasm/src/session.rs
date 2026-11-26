@@ -208,6 +208,8 @@ pub struct SlotSnapshot {
     pub data_access: Option<DataAccess>,
     pub register_write: Option<RegisterWrite>,
     pub trap: Option<String>,
+    /// Valores de los cables de la ruta de datos; `None` si la instrucción no está decodificada.
+    pub wires: Option<rv_core::Wires>,
 }
 
 /// Entrada que el usuario dio a la consola tras `at` pasos efectivos.
@@ -658,6 +660,7 @@ fn stage_snapshots(program: &Program, view: &PipelineView) -> Vec<StageSnapshot>
                         data_access: slot.data_access,
                         register_write: slot.register_write,
                         trap: slot.trap.map(|trap| trap.to_string()),
+                        wires: rv_core::Wires::of(slot),
                     })
                 })
                 .collect(),
