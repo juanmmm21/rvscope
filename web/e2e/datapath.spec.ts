@@ -119,11 +119,33 @@ test('sin forwarding no hay multiplexores de adelantamiento y las burbujas se ve
   await expect(page.locator('.dp-mux')).toHaveCount(6);
 });
 
-test('la ruta de datos se oculta con la doble emisión, que aún no la tiene', async ({ page }) => {
+test('la doble emisión apila sus dos vías y dice de qué vía llega lo adelantado', async ({
+  page,
+}) => {
   await open(page);
   await page.locator('#model').selectOption('2-vias');
-  await expect(page.locator('#datapath')).toBeHidden();
-  await page.locator('#model').selectOption('un-ciclo');
-  await expect(page.locator('#datapath')).toBeVisible();
-  await expect(page.locator('.dp-latch')).toHaveCount(0);
+  const lanes = page.locator('#datapath-figure svg.dp-pipeline');
+  await expect(lanes).toHaveCount(2);
+  const [old, young] = [lanes.nth(0), lanes.nth(1)];
+  await expect(old.locator('.dp-lane')).toHaveText('Vía 0');
+  await expect(young.locator('.dp-lane')).toHaveText('Vía 1');
+  await expect(page.locator('.dp-latch')).toHaveCount(8);
+
+  // Ciclo 5: el `jalr` del `call` va en la vía 0 y toma `ra` del `auipc`, que iba en la vía 1.
+  await stepTo(page, 0, 5);
+  const caption = page.locator('#datapath-caption');
+  await expect(caption).toContainText('Vía 0: ');
+  await expect(caption).toContainText('operando A adelantado desde EX/MEM de la vía 1');
+  await expect(old.locator('.dp-stage[data-stage="ex"]')).toContainText('jalr');
+  await expect(old.locator('.dp-source').first()).toHaveText('vía 1');
+  await expect(old.locator('.dp-source').first()).toHaveAttribute('data-cross', 'true');
+  await expect(old.locator('[data-wire="forward_mem_a"]')).toHaveAttribute('data-active', 'false');
+  // El salto sale de la vía 0: solo ella escribe el PC.
+  await expect(old.locator('[data-wire="ex_alu_to_pc"]')).toHaveAttribute('data-active', 'true');
+  await expect(young.locator('[data-wire="next_pc"]')).toHaveAttribute('data-active', 'false');
+
+  // Al volver a un modelo de una vía queda un solo diagrama.
+  await page.locator('#model').selectOption('5-etapas-forwarding');
+  await expect(lanes).toHaveCount(1);
+  await expect(page.locator('.dp-lane')).toHaveCount(0);
 });

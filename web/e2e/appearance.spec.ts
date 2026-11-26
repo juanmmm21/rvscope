@@ -60,6 +60,14 @@ for (const scheme of ['dark', 'light'] as const) {
     await expect(page.locator('#datapath-caption')).toContainText('(vaciada)');
     await expectAccessible(page, 'con la ruta de datos de 5 etapas');
 
+    // Doble emisión: las dos vías apiladas, con un operando que llega de la otra vía.
+    await page.locator('#model').selectOption('2-vias');
+    for (let index = 0; index < 5; index += 1) {
+      await page.locator('#step').click();
+    }
+    await expect(page.locator('#datapath-caption')).toContainText('de la vía 1');
+    await expectAccessible(page, 'con la ruta de datos de la doble emisión');
+
     await page.locator('#model').selectOption('5-etapas-sin-riesgos');
     await expect(page.locator('#model-note')).toHaveAttribute('data-warning', 'true');
     await page.locator('.cm-content').fill('addi a0, zero, 5000\n');
