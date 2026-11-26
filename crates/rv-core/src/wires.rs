@@ -67,13 +67,22 @@ pub struct Wires {
 }
 
 impl Wires {
-    /// Cables de lo que hay en `slot`; `None` si la instrucción no está decodificada (IF, o un
-    /// fallo que ya no conserva la instrucción).
+    /// Cables de lo que hay en `slot`; `None` si no hay palabra buscada (un fallo que viaja sin
+    /// la instrucción). Recién buscada (IF) o sin decodificar solo se sabe `pc + 4`: el sumador
+    /// de la búsqueda trabaja con cualquier palabra.
     pub fn of(slot: &Slot) -> Option<Wires> {
-        let instruction = slot.instruction?;
-        let control = slot.control?;
-        let operation = control.operation;
+        slot.word?;
         let pc = slot.pc;
+        let (Some(instruction), Some(control)) = (slot.instruction, slot.control) else {
+            return Some(Wires {
+                pc_plus_4: pc.wrapping_add(4),
+                immediate: None,
+                alu: None,
+                target: None,
+                pc_source: None,
+            });
+        };
+        let operation = control.operation;
         let imm = instruction.imm as u32;
         let immediate = match operation {
             Operation::Alu(_, AluSource::Register)
@@ -158,6 +167,7 @@ fn alu_wires(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::processor::Trap;
     use crate::view::{Progress, SlotState, Stage};
     use rv_isa::Instruction;
 
@@ -230,6 +240,25 @@ mod tests {
         let wires = Wires::of(&slot("addi a0, a1, -1", Stage::Id, [5, 0], 0x104)).unwrap();
         assert_eq!(wires.immediate, Some(u32::MAX));
         assert_eq!((wires.alu, wires.pc_source), (None, None));
+    }
+
+    #[test]
+    fn a_fetched_word_only_knows_its_next_pc() {
+        let word = rv_asm::assemble("add a0, a1, a2").unwrap().listing[0]
+            .instruction
+            .encode()
+            .unwrap();
+        for word in [word, 0] {
+            let wires = Wires::of(&Slot::fetched(0x100, word, SlotState::Active)).unwrap();
+            assert_eq!(wires.pc_plus_4, 0x104);
+            assert_eq!(
+                (wires.immediate, wires.alu, wires.target),
+                (None, None, None)
+            );
+            assert_eq!(wires.pc_source, None);
+        }
+        let fault = Slot::fault(0x100, Trap::Breakpoint, SlotState::Active);
+        assert_eq!(Wires::of(&fault), None);
     }
 
     #[test]
