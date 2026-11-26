@@ -4,11 +4,13 @@ import {
   loadCore,
   type AssembleReport,
   type Core,
+  type Label,
   type Machine,
   type RunStop,
   type Snapshot,
 } from './core';
 import { createEditor, type SourceEditor } from './editor/editor';
+import { MemoryPanel, RegisterPanel, type MemoryElements } from './inspect/panels';
 import { breakpointAddresses, executionLocation, sourceMap, type SourceMap } from './run/location';
 import { Runner, browserScheduler } from './run/runner';
 import { DEFAULT_SPEED_INDEX, SPEEDS, speedAt } from './run/speed';
@@ -28,36 +30,12 @@ function element<T extends HTMLElement>(selector: string, type: new () => T): T 
   return found;
 }
 
-function hex(value: number): string {
-  return `0x${(value >>> 0).toString(16).padStart(8, '0')}`;
-}
-
 function plural(count: number, one: string, many: string): string {
   return `${String(count)} ${count === 1 ? one : many}`;
 }
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function renderRegisters(core: Core, snapshot: Snapshot, target: HTMLElement): void {
-  const rows = core.registers.map((info) => {
-    const row = document.createElement('div');
-    row.className = 'register';
-    if (snapshot.changed.includes(info.index)) {
-      row.dataset.changed = 'true';
-    }
-    const name = document.createElement('span');
-    name.className = 'register-name';
-    name.textContent = info.abi;
-    name.title = `${info.name} · ${info.role}`;
-    const value = document.createElement('span');
-    value.className = 'register-value';
-    value.textContent = hex(snapshot.registers[info.index] ?? 0);
-    row.append(name, value);
-    return row;
-  });
-  target.replaceChildren(...rows);
 }
 
 function renderAssembly(report: AssembleReport, target: HTMLElement): void {
@@ -115,6 +93,8 @@ interface Controls {
   readonly speedValue: HTMLOutputElement;
   readonly runStatus: HTMLElement;
   readonly registers: HTMLElement;
+  readonly registerFormat: HTMLElement;
+  readonly memory: MemoryElements;
   readonly consoleOutput: HTMLElement;
   readonly consoleForm: HTMLFormElement;
   readonly consoleInput: HTMLInputElement;
@@ -133,6 +113,19 @@ function findControls(): Controls {
     speedValue: element('#speed-value', HTMLOutputElement),
     runStatus: element('#run-status', HTMLElement),
     registers: element('#registers', HTMLElement),
+    registerFormat: element('#register-format', HTMLElement),
+    memory: {
+      regions: element('#memory-region', HTMLElement),
+      units: element('#memory-unit', HTMLElement),
+      gotoForm: element('#memory-goto', HTMLFormElement),
+      gotoInput: element('#memory-goto-input', HTMLInputElement),
+      gotoButton: element('#memory-goto-button', HTMLButtonElement),
+      previous: element('#memory-previous', HTMLButtonElement),
+      next: element('#memory-next', HTMLButtonElement),
+      followSp: element('#memory-follow-sp', HTMLInputElement),
+      status: element('#memory-status', HTMLElement),
+      grid: element('#memory-grid', HTMLTableElement),
+    },
     consoleOutput: element('#console-output', HTMLElement),
     consoleForm: element('#console-form', HTMLFormElement),
     consoleInput: element('#console-input', HTMLInputElement),
@@ -147,6 +140,10 @@ class Workbench {
   readonly #ui: Controls;
   readonly #editor: SourceEditor;
   readonly #runner: Runner;
+  readonly #registers: RegisterPanel;
+  readonly #memory: MemoryPanel;
+  // Etiquetas del último ensamblado correcto, para «Ir a» en la memoria.
+  #labels: readonly Label[] = [];
   // Listado del último ensamblado correcto; `null` si hay errores o se editó después.
   #map: SourceMap | null = null;
   #pendingAssembly: number | undefined;
@@ -160,6 +157,14 @@ class Workbench {
     this.#core = core;
     this.#machine = core.createMachine();
     this.#ui = findControls();
+    this.#registers = new RegisterPanel(
+      this.#ui.registers,
+      this.#ui.registerFormat,
+      core.registers,
+    );
+    this.#memory = new MemoryPanel(this.#ui.memory, (error) => {
+      this.#fail(error);
+    });
     this.#ui.speed.max = String(SPEEDS.length - 1);
     this.#ui.speed.value = String(DEFAULT_SPEED_INDEX);
     this.#runner = new Runner(
@@ -301,6 +306,10 @@ class Workbench {
       this.#editor.showReport(report);
       renderAssembly(report, this.#ui.assemblyStatus);
       this.#map = report.ok ? sourceMap(report.listing) : null;
+      this.#labels = report.labels;
+      if (report.ok) {
+        this.#memory.load(this.#machine);
+      }
       this.#syncBreakpoints();
     } catch (error: unknown) {
       this.#map = null;
@@ -421,6 +430,8 @@ class Workbench {
       ui.runStatus.dataset.state = 'idle';
       ui.runStatus.textContent = 'sin programa ensamblado';
       this.#editor.showLocation(null);
+      this.#registers.render(null);
+      this.#memory.clear();
       return;
     }
     let snapshot: Snapshot;
@@ -444,7 +455,12 @@ class Workbench {
       snapshot.halt?.kind === 'fault' ? 'error' : running ? 'running' : 'idle';
     ui.runStatus.textContent = describeRun(snapshot, running, this.#breakpointLine);
 
-    renderRegisters(this.#core, snapshot, ui.registers);
+    this.#registers.render(snapshot);
+    this.#memory.render(snapshot, {
+      labels: this.#labels,
+      registers: this.#core.registers,
+      values: snapshot.registers,
+    });
     if (snapshot.output !== this.#lastOutput) {
       ui.consoleOutput.textContent = snapshot.output;
       ui.consoleOutput.scrollTop = ui.consoleOutput.scrollHeight;
