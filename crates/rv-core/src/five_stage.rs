@@ -1,7 +1,8 @@
-//! Procesador segmentado de cinco etapas (IF, ID, EX, MEM, WB) sin forwarding ni detección de
-//! riesgos de datos: una instrucción que lee un registro que alguna de las dos anteriores aún no
-//! ha escrito recibe el valor viejo. Los saltos se resuelven en EX y vacían lo que va detrás.
-//! Las reglas de temporización y de paradas están en el ADR 0002.
+//! Procesador segmentado de cinco etapas (IF, ID, EX, MEM, WB) sin forwarding. Según su unidad
+//! de riesgos, una instrucción que lee un registro que alguna de las dos anteriores aún no ha
+//! escrito recibe el valor viejo (`Hazards::Ignore`) o espera en ID con burbujas hasta que se
+//! escribe (`Hazards::Stall`). Los saltos se resuelven en EX y vacían lo que va detrás. Las
+//! reglas de temporización y de paradas están en el ADR 0002.
 
 use rv_asm::Program;
 use rv_isa::{Instruction, Reg};
@@ -11,6 +12,16 @@ use crate::map::MapError;
 use crate::processor::{DataAccess, Halt, Processor, RegisterWrite, Retired, Stats, Trap};
 use crate::state::ArchState;
 use crate::syscall::{Console, EcallEffect, ecall};
+
+/// Unidad de riesgos de datos: lo único que cambia entre los modelos de cinco etapas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hazards {
+    /// Sin detección: se lee lo que haya en el banco de registros, aunque sea viejo.
+    Ignore,
+    /// Detección en ID: si un operando lo escribe una instrucción que está en EX o en MEM, se
+    /// congelan el `pc` e IF/ID y entra una burbuja en EX.
+    Stall,
+}
 
 /// Registro de segmentación entre dos etapas: vacío (burbuja), con una instrucción o con una
 /// instrucción que ya ha fallado y viaja hasta WB para parar allí.
@@ -61,6 +72,25 @@ impl Latch<Uop> {
             Latch::Holds(uop) => Some(uop.pc),
         }
     }
+
+    /// Registro que escribirá en WB lo que lleva este registro de segmentación, si escribe
+    /// alguno distinto de `x0`. La `ecall` no cuenta: nada se busca detrás de ella hasta que
+    /// se retira, así que nunca hay nadie esperando su resultado en ID.
+    fn destination(&self) -> Option<Reg> {
+        let Latch::Holds(uop) = self else {
+            return None;
+        };
+        let writes = matches!(
+            uop.operation,
+            Operation::Alu(..)
+                | Operation::Lui
+                | Operation::Auipc
+                | Operation::Jal
+                | Operation::Jalr
+                | Operation::Load(_)
+        );
+        (writes && uop.instruction.rd != Reg::ZERO).then_some(uop.instruction.rd)
+    }
 }
 
 /// Resultado de la etapa WB cuando no falla.
@@ -71,8 +101,11 @@ enum WriteBack {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FiveStage {
+    hazards: Hazards,
     state: ArchState,
     stats: Stats,
+    /// Burbujas que ha metido la unidad de riesgos (los vaciados por saltos no cuentan).
+    stalls: u64,
     halt: Option<Halt>,
     awaiting_input: bool,
     /// `pc` de búsqueda; el arquitectónico es `state.pc`, que avanza al retirar.
@@ -85,16 +118,21 @@ pub struct FiveStage {
 }
 
 impl FiveStage {
-    pub fn new(program: &Program) -> Result<FiveStage, MapError> {
-        Ok(FiveStage::from_state(ArchState::for_program(program)?))
+    pub fn new(program: &Program, hazards: Hazards) -> Result<FiveStage, MapError> {
+        Ok(FiveStage::from_state(
+            ArchState::for_program(program)?,
+            hazards,
+        ))
     }
 
     /// Arranca con el pipeline vacío desde un estado ya preparado.
-    pub fn from_state(state: ArchState) -> FiveStage {
+    pub fn from_state(state: ArchState, hazards: Hazards) -> FiveStage {
         FiveStage {
+            hazards,
             fetch_pc: state.pc,
             state,
             stats: Stats::default(),
+            stalls: 0,
             halt: None,
             awaiting_input: false,
             if_id: Latch::Bubble,
@@ -109,6 +147,32 @@ impl FiveStage {
     /// ciclo, incluidas las que un salto acaba de vaciar; `None` es una burbuja.
     pub fn stage_pcs(&self) -> [Option<u32>; 5] {
         self.stage_pcs
+    }
+
+    pub fn hazards(&self) -> Hazards {
+        self.hazards
+    }
+
+    /// Ciclos en que la unidad de riesgos ha retenido una instrucción en ID.
+    pub fn stalls(&self) -> u64 {
+        self.stalls
+    }
+
+    /// Cierto si la instrucción de ID lee un registro que aún no se ha escrito: lo escribe la
+    /// que está en EX o la que está en MEM. La de WB ya lo ha hecho en la primera mitad del
+    /// ciclo, así que no hace falta mirarla.
+    fn must_stall(&self, decoded: &Latch<Uop>) -> bool {
+        if self.hazards == Hazards::Ignore {
+            return false;
+        }
+        let Latch::Holds(uop) = decoded else {
+            return false;
+        };
+        let sources = [uop.instruction.rs1, uop.instruction.rs2];
+        [self.id_ex.destination(), self.ex_mem.destination()]
+            .into_iter()
+            .flatten()
+            .any(|written| sources.contains(&written))
     }
 
     fn stop(&mut self, halt: Halt) {
@@ -246,7 +310,10 @@ impl FiveStage {
 
 impl Processor for FiveStage {
     fn name(&self) -> &'static str {
-        "5 etapas sin forwarding ni detección de riesgos"
+        match self.hazards {
+            Hazards::Ignore => "5 etapas sin forwarding ni detección de riesgos",
+            Hazards::Stall => "5 etapas con detección de riesgos y burbujas",
+        }
     }
 
     fn state(&self) -> &ArchState {
@@ -335,15 +402,23 @@ impl Processor for FiveStage {
                 (Latch::Bubble, Latch::Bubble, !mem_wb.blocks_fetch())
             }
             None => {
-                let id_ex = self.decode_stage();
-                let blocked =
-                    id_ex.blocks_fetch() || ex_mem.blocks_fetch() || mem_wb.blocks_fetch();
-                let if_id = if blocked {
-                    Latch::Bubble
+                let decoded = self.decode_stage();
+                if self.must_stall(&decoded) {
+                    // La instrucción se queda en IF/ID y la de IF espera detrás; en EX entra
+                    // una burbuja. `x0` nunca es destino, así que no frena a nadie.
+                    self.stalls += 1;
+                    let waiting = !(ex_mem.blocks_fetch() || mem_wb.blocks_fetch());
+                    (Latch::Bubble, self.if_id, waiting)
                 } else {
-                    self.fetch_stage()
-                };
-                (id_ex, if_id, !blocked)
+                    let blocked =
+                        decoded.blocks_fetch() || ex_mem.blocks_fetch() || mem_wb.blocks_fetch();
+                    let if_id = if blocked {
+                        Latch::Bubble
+                    } else {
+                        self.fetch_stage()
+                    };
+                    (decoded, if_id, !blocked)
+                }
             }
         };
         self.stage_pcs = [
@@ -375,7 +450,11 @@ mod tests {
     }
 
     fn boot(source: &str) -> FiveStage {
-        FiveStage::new(&program(source)).unwrap()
+        FiveStage::new(&program(source), Hazards::Ignore).unwrap()
+    }
+
+    fn boot_stalling(source: &str) -> FiveStage {
+        FiveStage::new(&program(source), Hazards::Stall).unwrap()
     }
 
     fn read(cpu: &impl Processor, name: &str) -> u32 {
@@ -398,9 +477,13 @@ mod tests {
     /// Un programa sin riesgos de datos retira lo mismo, en el mismo orden, y acaba igual que
     /// en el de un ciclo.
     fn assert_matches_single_cycle(source: &str) -> FiveStage {
+        assert_model_matches_single_cycle(source, Hazards::Ignore)
+    }
+
+    fn assert_model_matches_single_cycle(source: &str, hazards: Hazards) -> FiveStage {
         let program = program(source);
         let mut reference = SingleCycle::new(&program).unwrap();
-        let mut pipelined = FiveStage::new(&program).unwrap();
+        let mut pipelined = FiveStage::new(&program, hazards).unwrap();
         assert_eq!(trace(&mut pipelined), trace(&mut reference));
         assert_eq!(pipelined.state(), reference.state());
         assert_eq!(pipelined.halt(), reference.halt());
@@ -649,5 +732,101 @@ mod tests {
         let mut second = boot(HAZARD_FREE);
         assert_eq!(trace(&mut first), trace(&mut second));
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn stalling_waits_for_the_producer_in_wb() {
+        let source = "li a0, 5\naddi a1, a0, 1\nebreak\n";
+        let mut cpu = boot_stalling(source);
+        for _ in 0..2 {
+            cpu.step();
+        }
+        // addi espera en ID mientras li está en EX y en MEM; IF la sigue reteniendo detrás.
+        cpu.step();
+        assert_eq!(cpu.stage_pcs(), [Some(8), Some(4), Some(0), None, None]);
+        cpu.step();
+        assert_eq!(cpu.stage_pcs(), [Some(8), Some(4), None, Some(0), None]);
+        cpu.step();
+        assert_eq!(cpu.stage_pcs(), [Some(8), Some(4), None, None, Some(0)]);
+        cpu.run(100);
+        assert_eq!(read(&cpu, "a1"), 6);
+        assert_eq!(cpu.stalls(), 2);
+        // 2 retiradas + 4 de llenado + 2 burbujas; sin detección serían 6.
+        assert_eq!(cpu.stats().cycles, 8);
+        let mut unchecked = boot(source);
+        unchecked.run(100);
+        assert_eq!((unchecked.stats().cycles, unchecked.stalls()), (6, 0));
+    }
+
+    #[test]
+    fn stalls_depend_on_the_distance_to_the_producer() {
+        // Una instrucción en medio: solo falta una burbuja. Dos: ninguna.
+        let mut cpu = boot_stalling("li a0, 5\nnop\naddi a1, a0, 1\nebreak\n");
+        cpu.run(100);
+        assert_eq!((read(&cpu, "a1"), cpu.stalls()), (6, 1));
+        let mut cpu = boot_stalling("li a0, 5\nnop\nnop\naddi a1, a0, 1\nebreak\n");
+        cpu.run(100);
+        assert_eq!((read(&cpu, "a1"), cpu.stalls()), (6, 0));
+    }
+
+    #[test]
+    fn only_registers_actually_read_and_written_stall() {
+        // x0 no es destino, lui y jal no leen y un almacenamiento no escribe registro.
+        let mut cpu = boot_stalling(
+            "li zero, 5\nadd a0, zero, zero\nlui a1, 1\nlui a1, 2\n\
+             sw a1, -4(sp)\nlw a2, -8(sp)\njal ra, end\nend: ebreak\n",
+        );
+        cpu.run(100);
+        // Solo el sw espera al lui de delante (dos burbujas).
+        assert_eq!(cpu.stalls(), 2);
+        assert_eq!(read(&cpu, "a0"), 0);
+    }
+
+    #[test]
+    fn stalling_fixes_every_data_hazard() {
+        let cpu = assert_model_matches_single_cycle(
+            "li a0, 5\naddi a1, a0, 1\naddi a2, a0, 1\naddi a3, a0, 1\nebreak\n",
+            Hazards::Stall,
+        );
+        assert_eq!(
+            (read(&cpu, "a1"), read(&cpu, "a2"), read(&cpu, "a3")),
+            (6, 6, 6)
+        );
+        let cpu = assert_model_matches_single_cycle(
+            "li t0, 7\nsw t0, -4(sp)\nlw a0, -4(sp)\nmv a1, a0\nbnez a1, end\nli a2, 1\n\
+             end: ebreak\n",
+            Hazards::Stall,
+        );
+        assert_eq!((read(&cpu, "a1"), read(&cpu, "a2")), (7, 0));
+        let cpu = assert_model_matches_single_cycle(
+            include_str!("../../../examples/factorial.s"),
+            Hazards::Stall,
+        );
+        assert_eq!(read(&cpu, "a0"), 720);
+    }
+
+    #[test]
+    fn stalling_keeps_traps_ecalls_and_hazard_free_timing() {
+        let cpu = assert_model_matches_single_cycle(HAZARD_FREE, Hazards::Stall);
+        let mut unchecked = boot(HAZARD_FREE);
+        unchecked.run(10_000);
+        assert_eq!((cpu.stalls(), cpu.stats()), (0, unchecked.stats()));
+
+        assert_model_matches_single_cycle("li a0, 1\nlw a0, 2(sp)\nli a1, 7\n", Hazards::Stall);
+        assert_model_matches_single_cycle("li t0, 6\njalr ra, 0(t0)\nnop\n", Hazards::Stall);
+
+        let source = ".data\nprompt: .string \"n? \"\n.text\n\
+             la a0, prompt\nli a7, 4\necall\nli a7, 5\necall\nslli a0, a0, 1\nli a7, 1\n\
+             ecall\nli a7, 10\necall\n";
+        let mut cpu = boot_stalling(source);
+        assert_eq!(cpu.run(1_000), RunOutcome::AwaitingInput);
+        cpu.console_mut().push_input("21\n");
+        cpu.run(1_000);
+        let mut reference = SingleCycle::new(&program(source)).unwrap();
+        reference.console_mut().push_input("21\n");
+        reference.run(1_000);
+        assert_eq!(cpu.state(), reference.state());
+        assert_eq!(cpu.state().console.output_text(), "n? 42");
+        assert_eq!(cpu.name(), "5 etapas con detección de riesgos y burbujas");
     }
 }
