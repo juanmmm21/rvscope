@@ -1,11 +1,13 @@
-//! Procesador segmentado de cinco etapas (IF, ID, EX, MEM, WB) sin forwarding. Según su unidad
-//! de riesgos, una instrucción que lee un registro que alguna de las dos anteriores aún no ha
-//! escrito recibe el valor viejo (`Hazards::Ignore`) o espera en ID con burbujas hasta que se
-//! escribe (`Hazards::Stall`). Los saltos se resuelven en EX y vacían lo que va detrás. Las
+//! Procesador segmentado de cinco etapas (IF, ID, EX, MEM, WB). Según su unidad de riesgos, una
+//! instrucción que lee un registro que alguna de las dos anteriores aún no ha escrito recibe el
+//! valor viejo (`Hazards::Ignore`), espera en ID con burbujas hasta que se escribe
+//! (`Hazards::Stall`) o lo recibe adelantado en EX y solo espera tras una carga
+//! (`Hazards::Forward`). Los saltos se resuelven en EX y vacían lo que va detrás. Las
 //! reglas de temporización y de paradas están en el ADR 0002.
 
 use rv_asm::Program;
 use rv_isa::{Instruction, Reg};
+use serde::Serialize;
 
 use crate::exec::{Operation, access_memory, execute};
 use crate::map::MapError;
@@ -21,6 +23,18 @@ pub enum Hazards {
     /// Detección en ID: si un operando lo escribe una instrucción que está en EX o en MEM, se
     /// congelan el `pc` e IF/ID y entra una burbuja en EX.
     Stall,
+    /// Forwarding hacia EX desde EX/MEM y MEM/WB más detección de carga-uso: solo una carga en
+    /// EX seguida de quien lee su destino en ID mete una burbuja.
+    Forward,
+}
+
+/// Registro de segmentación del que EX ha tomado un operando en vez del valor leído en ID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum Bypass {
+    /// Resultado de la ALU de la instrucción de justo delante, que ahora está en MEM.
+    ExMem,
+    /// Lo que escribe la de dos por delante, que ahora está en WB: su resultado o lo cargado.
+    MemWb,
 }
 
 /// Registro de segmentación entre dos etapas: vacío (burbuja), con una instrucción o con una
@@ -91,6 +105,10 @@ impl Latch<Uop> {
         );
         (writes && uop.instruction.rd != Reg::ZERO).then_some(uop.instruction.rd)
     }
+
+    fn holds_load(&self) -> bool {
+        matches!(self, Latch::Holds(uop) if matches!(uop.operation, Operation::Load(_)))
+    }
 }
 
 /// Resultado de la etapa WB cuando no falla.
@@ -106,6 +124,9 @@ pub struct FiveStage {
     stats: Stats,
     /// Burbujas que ha metido la unidad de riesgos (los vaciados por saltos no cuentan).
     stalls: u64,
+    /// De dónde tomó EX cada operando (`rs1`, `rs2`) en el último ciclo; `None` es el valor
+    /// leído en ID.
+    bypasses: [Option<Bypass>; 2],
     halt: Option<Halt>,
     awaiting_input: bool,
     /// `pc` de búsqueda; el arquitectónico es `state.pc`, que avanza al retirar.
@@ -133,6 +154,7 @@ impl FiveStage {
             state,
             stats: Stats::default(),
             stalls: 0,
+            bypasses: [None; 2],
             halt: None,
             awaiting_input: false,
             if_id: Latch::Bubble,
@@ -158,25 +180,57 @@ impl FiveStage {
         self.stalls
     }
 
-    /// Cierto si la instrucción de ID lee un registro que aún no se ha escrito: lo escribe la
-    /// que está en EX o la que está en MEM. La de WB ya lo ha hecho en la primera mitad del
-    /// ciclo, así que no hace falta mirarla.
+    /// Operandos que EX tomó de un registro de segmentación en el último ciclo (`rs1`, `rs2`);
+    /// solo hay alguno con `Hazards::Forward`.
+    pub fn bypasses(&self) -> [Option<Bypass>; 2] {
+        self.bypasses
+    }
+
+    /// Cierto si la instrucción de ID tiene que esperar. Sin forwarding, si lee un registro que
+    /// escribe la que está en EX o la que está en MEM (la de WB ya lo ha escrito en la primera
+    /// mitad del ciclo). Con forwarding, solo si lo escribe una carga que está en EX: su valor
+    /// sale de MEM al final del ciclo siguiente, demasiado tarde para adelantarlo a EX.
     fn must_stall(&self, decoded: &Latch<Uop>) -> bool {
-        if self.hazards == Hazards::Ignore {
-            return false;
-        }
         let Latch::Holds(uop) = decoded else {
             return false;
         };
+        let producers = match self.hazards {
+            Hazards::Ignore => return false,
+            Hazards::Stall => [self.id_ex.destination(), self.ex_mem.destination()],
+            Hazards::Forward if self.id_ex.holds_load() => [self.id_ex.destination(), None],
+            Hazards::Forward => return false,
+        };
         let sources = [uop.instruction.rs1, uop.instruction.rs2];
-        [self.id_ex.destination(), self.ex_mem.destination()]
+        producers
             .into_iter()
             .flatten()
             .any(|written| sources.contains(&written))
     }
 
+    /// Valor de `reg` para EX: el de la instrucción más reciente de las dos que van delante y
+    /// lo escriben, o `read` (lo leído en ID) si ninguna lo hace. La de EX/MEM nunca es una
+    /// carga sin valor: la burbuja de carga-uso lo impide.
+    fn forward(&self, reg: Reg, read: u32) -> (u32, Option<Bypass>) {
+        if self.hazards != Hazards::Forward {
+            return (read, None);
+        }
+        for (latch, bypass) in [(&self.ex_mem, Bypass::ExMem), (&self.mem_wb, Bypass::MemWb)] {
+            if latch.destination() == Some(reg) {
+                return match latch {
+                    Latch::Holds(Uop {
+                        result: Some(value),
+                        ..
+                    }) => (*value, Some(bypass)),
+                    _ => (read, None),
+                };
+            }
+        }
+        (read, None)
+    }
+
     fn stop(&mut self, halt: Halt) {
         self.halt = Some(halt);
+        self.bypasses = [None; 2];
         self.if_id = Latch::Bubble;
         self.id_ex = Latch::Bubble;
         self.ex_mem = Latch::Bubble;
@@ -237,11 +291,19 @@ impl FiveStage {
         }
     }
 
-    /// EX: la ALU y la decisión de salto. Devuelve también el destino si hay que vaciar.
-    fn execute_stage(&self) -> (Latch<Uop>, Option<u32>) {
+    /// EX: adelanta los operandos si hace falta, la ALU y la decisión de salto. Devuelve
+    /// también de dónde vino cada operando y el destino si hay que vaciar. Los registros de
+    /// segmentación de delante son los del principio del ciclo: aún no se han desplazado.
+    fn execute_stage(&self) -> (Latch<Uop>, [Option<Bypass>; 2], Option<u32>) {
         let Latch::Holds(mut uop) = self.id_ex else {
-            return (self.id_ex, None);
+            return (self.id_ex, [None; 2], None);
         };
+        let (rs1, rs1_bypass) = self.forward(uop.instruction.rs1, uop.rs1);
+        let (rs2, rs2_bypass) = self.forward(uop.instruction.rs2, uop.rs2);
+        // El almacenamiento usa en MEM el `rs2` ya adelantado.
+        uop.rs1 = rs1;
+        uop.rs2 = rs2;
+        let bypasses = [rs1_bypass, rs2_bypass];
         match execute(uop.operation, &uop.instruction, uop.pc, uop.rs1, uop.rs2) {
             Ok(execution) => {
                 uop.next_pc = execution.next_pc;
@@ -249,9 +311,9 @@ impl FiveStage {
                 uop.address = execution.address;
                 let redirect =
                     (execution.next_pc != uop.pc.wrapping_add(4)).then_some(execution.next_pc);
-                (Latch::Holds(uop), redirect)
+                (Latch::Holds(uop), bypasses, redirect)
             }
-            Err(trap) => (Latch::Fault(Halt { pc: uop.pc, trap }), None),
+            Err(trap) => (Latch::Fault(Halt { pc: uop.pc, trap }), bypasses, None),
         }
     }
 
@@ -313,6 +375,7 @@ impl Processor for FiveStage {
         match self.hazards {
             Hazards::Ignore => "5 etapas sin forwarding ni detección de riesgos",
             Hazards::Stall => "5 etapas con detección de riesgos y burbujas",
+            Hazards::Forward => "5 etapas con forwarding y detección de riesgos",
         }
     }
 
@@ -392,7 +455,8 @@ impl Processor for FiveStage {
         }
 
         let mem_wb = self.memory_stage();
-        let (ex_mem, redirect) = self.execute_stage();
+        let (ex_mem, bypasses, redirect) = self.execute_stage();
+        self.bypasses = bypasses;
         // En un ciclo de vaciado IF e ID también trabajan (en el camino equivocado) y se ve,
         // aunque lo que hacen se descarta.
         let fetching_pc = self.fetch_pc;
