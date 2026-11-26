@@ -14,7 +14,7 @@ use crate::pipeline::{
 use crate::processor::{Halt, Processor, Retired, Stats, Trap};
 use crate::state::ArchState;
 use crate::syscall::Console;
-use crate::view::{PipelineView, Slot, SlotState, Stage};
+use crate::view::{Forwarded, PipelineView, Slot, SlotState, Stage};
 
 /// Lo que lleva cada registro de segmentación: un hueco por vía.
 type Lanes<T> = [Latch<T>; 2];
@@ -83,17 +83,17 @@ impl DualIssue {
 
     /// Valor de `reg` para EX: el de la instrucción más reciente de las que van delante y lo
     /// escriben (de EX/MEM a MEM/WB y, dentro de cada uno, la vía 1 antes que la 0), o `read`.
-    fn forward(&self, reg: Reg, read: u32) -> (u32, Option<Bypass>) {
+    fn forward(&self, reg: Reg, read: u32) -> (u32, Option<Forwarded>) {
         let sources = [
-            (&self.ex_mem[1], Bypass::ExMem),
-            (&self.ex_mem[0], Bypass::ExMem),
-            (&self.mem_wb[1], Bypass::MemWb),
-            (&self.mem_wb[0], Bypass::MemWb),
+            (&self.ex_mem[1], (Bypass::ExMem, 1)),
+            (&self.ex_mem[0], (Bypass::ExMem, 0)),
+            (&self.mem_wb[1], (Bypass::MemWb, 1)),
+            (&self.mem_wb[0], (Bypass::MemWb, 0)),
         ];
-        for (latch, bypass) in sources {
+        for (latch, source) in sources {
             if let Some(produced) = latch.produces(reg) {
                 return match produced {
-                    Some(value) => (value, Some(bypass)),
+                    Some(value) => (value, Some(source)),
                     None => (read, None),
                 };
             }
@@ -102,7 +102,7 @@ impl DualIssue {
     }
 
     /// EX de una vía. Devuelve también de dónde vino cada operando y el destino si salta.
-    fn execute_lane(&self, latch: Latch<Uop>) -> (Latch<Uop>, [Option<Bypass>; 2], Option<u32>) {
+    fn execute_lane(&self, latch: Latch<Uop>) -> (Latch<Uop>, [Option<Forwarded>; 2], Option<u32>) {
         let Latch::Holds(mut uop) = latch else {
             return (latch, [None; 2], None);
         };
@@ -417,10 +417,13 @@ mod tests {
         })
     }
 
-    /// De dónde tomó EX `rs1` y `rs2` en cada vía en el último ciclo.
-    fn bypasses(cpu: &DualIssue) -> [[Option<Bypass>; 2]; 2] {
+    /// De dónde (registro de segmentación y vía) tomó EX `rs1` y `rs2` en cada vía en el
+    /// último ciclo.
+    fn bypasses(cpu: &DualIssue) -> [[Option<Forwarded>; 2]; 2] {
         let ex = &cpu.view().stages[2];
-        let bypass = |operand: Option<Operand>| operand.and_then(|operand| operand.bypass);
+        let bypass = |operand: Option<Operand>| {
+            operand.and_then(|operand| operand.bypass.zip(operand.bypass_lane))
+        };
         std::array::from_fn(|lane| {
             ex.lanes[lane].map_or([None; 2], |slot| [bypass(slot.rs1), bypass(slot.rs2)])
         })
@@ -523,7 +526,31 @@ mod tests {
             cpu.step();
         }
         assert_eq!(pcs(&cpu)[2], [Some(4), Some(8)]);
-        assert_eq!(bypasses(&cpu), [[Some(Bypass::ExMem), None], [None, None]]);
+        assert_eq!(
+            bypasses(&cpu),
+            [[Some((Bypass::ExMem, 0)), None], [None, None]]
+        );
+    }
+
+    #[test]
+    fn the_view_says_which_lane_a_bypass_comes_from() {
+        let source = format!("li a0, 1\nli a1, 2\nadd a2, a1, a0\n{EXIT}");
+        let cpu = assert_matches_single_cycle(&source);
+        assert_eq!(read(&cpu, "a2"), 3);
+
+        let mut cpu = boot(&source);
+        for _ in 0..4 {
+            cpu.step();
+        }
+        assert_eq!(pcs(&cpu)[2], [Some(8), Some(12)]);
+        // `a1` lo escribe la joven del par de delante y `a0` la antigua.
+        assert_eq!(
+            bypasses(&cpu),
+            [
+                [Some((Bypass::ExMem, 1)), Some((Bypass::ExMem, 0))],
+                [None, None]
+            ]
+        );
     }
 
     #[test]

@@ -317,6 +317,63 @@ fn forwarding_shows_where_each_operand_came_from() {
     );
 }
 
+/// Lo que produce la instrucción de `lane` en `stage` para adelantar: el resultado de la ALU en
+/// MEM (EX/MEM) o lo que escribe en WB (MEM/WB).
+fn produced(view: &PipelineView, stage: Stage, lane: u8) -> Option<(rv_isa::Reg, u32)> {
+    let slot = view
+        .stage(stage)?
+        .lanes
+        .get(usize::from(lane))
+        .copied()
+        .flatten()?;
+    let reg = slot.instruction?.rd;
+    match stage {
+        Stage::Mem => slot.result.map(|value| (reg, value)),
+        _ => slot.register_write.map(|write| (write.reg, write.value)),
+    }
+}
+
+#[test]
+fn every_bypass_names_the_lane_that_produced_the_value() {
+    use rv_core::Bypass::{ExMem, MemWb};
+    for source in [FACTORIAL, MIXED] {
+        let program = assemble(source).unwrap();
+        for (name, factory) in PIPELINED {
+            let mut cpu = factory(&program);
+            let lanes = u8::try_from(cpu.view().stages[0].lanes.len()).unwrap();
+            let mut bypassed = 0;
+            for (_, view) in record(cpu.as_mut()) {
+                let Some(ex) = view.stage(Stage::Ex) else {
+                    continue;
+                };
+                for slot in ex.lanes.iter().flatten() {
+                    for operand in [slot.rs1, slot.rs2].into_iter().flatten() {
+                        assert_eq!(operand.bypass.is_some(), operand.bypass_lane.is_some());
+                        let (Some(bypass), Some(lane)) = (operand.bypass, operand.bypass_lane)
+                        else {
+                            continue;
+                        };
+                        assert!(lane < lanes, "{name}: vía {lane}");
+                        let stage = match bypass {
+                            ExMem => Stage::Mem,
+                            MemWb => Stage::Wb,
+                        };
+                        assert_eq!(
+                            produced(&view, stage, lane),
+                            Some((operand.reg, operand.value)),
+                            "{name}: pc {:#x}",
+                            slot.pc
+                        );
+                        bypassed += 1;
+                    }
+                }
+            }
+            let forwards = name != "5 etapas con burbujas";
+            assert_eq!(bypassed > 0, forwards, "{name}");
+        }
+    }
+}
+
 #[test]
 fn the_dual_issue_view_has_two_lanes_and_counts_pairs() {
     let program = assemble(MIXED).unwrap();

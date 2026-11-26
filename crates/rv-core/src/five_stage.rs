@@ -314,7 +314,11 @@ impl Processor for FiveStage {
         self.record([
             fetching,
             decoding,
-            ex_mem.slot(Stage::Ex, SlotState::Active, bypasses),
+            ex_mem.slot(
+                Stage::Ex,
+                SlotState::Active,
+                bypasses.map(|bypass| bypass.map(|bypass| (bypass, 0))),
+            ),
             mem_wb.slot(Stage::Mem, SlotState::Active, [None; 2]),
             retiring,
         ]);

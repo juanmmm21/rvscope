@@ -123,13 +123,18 @@ impl Control {
     }
 }
 
-/// Operando de la instrucción: el registro, el valor que se usa y, en EX, si llegó adelantado.
+/// Operando de la instrucción: el registro, el valor que se usa y, en EX, si llegó adelantado
+/// y desde qué vía (siempre la 0 en los modelos de una vía; los dos campos van juntos).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct Operand {
     pub reg: Reg,
     pub value: u32,
     pub bypass: Option<Bypass>,
+    pub bypass_lane: Option<u8>,
 }
+
+/// De dónde llega un operando adelantado: el registro de segmentación y la vía.
+pub(crate) type Forwarded = (Bypass, u8);
 
 /// Qué ha pasado con la instrucción de un hueco en este ciclo.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -192,7 +197,7 @@ impl Slot {
         stage: Stage,
         state: SlotState,
         progress: Progress,
-        bypasses: [Option<Bypass>; 2],
+        bypasses: [Option<Forwarded>; 2],
     ) -> Slot {
         let instruction = progress.instruction;
         let control = Control::of(&instruction);
@@ -201,8 +206,13 @@ impl Slot {
         } else {
             [None; 2]
         };
-        let operand = |reads: bool, reg: Reg, value: u32, bypass: Option<Bypass>| {
-            reads.then_some(Operand { reg, value, bypass })
+        let operand = |reads: bool, reg: Reg, value: u32, forwarded: Option<Forwarded>| {
+            reads.then_some(Operand {
+                reg,
+                value,
+                bypass: forwarded.map(|(bypass, _)| bypass),
+                bypass_lane: forwarded.map(|(_, lane)| lane),
+            })
         };
         let executed = stage.executed();
         Slot {
@@ -376,7 +386,7 @@ mod tests {
             address: None,
             data_access: None,
         };
-        let bypass = [Some(Bypass::ExMem), None];
+        let bypass = [Some((Bypass::ExMem, 1)), None];
         let id = Slot::decoded(Stage::Id, SlotState::Active, progress, bypass);
         assert_eq!((id.result, id.next_pc), (None, None));
         assert_eq!(id.rs1.map(|operand| operand.bypass), Some(None));
@@ -388,7 +398,8 @@ mod tests {
             Some(Operand {
                 reg: addi.rs1,
                 value: 5,
-                bypass: Some(Bypass::ExMem)
+                bypass: Some(Bypass::ExMem),
+                bypass_lane: Some(1),
             })
         );
     }

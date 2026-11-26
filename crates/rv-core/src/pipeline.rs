@@ -10,7 +10,7 @@ use crate::memory::Memory;
 use crate::processor::{DataAccess, Halt, RegisterWrite, Retired, Trap};
 use crate::state::{ArchState, Registers};
 use crate::syscall::{EcallEffect, ecall};
-use crate::view::{Progress, Slot, SlotState, Stage};
+use crate::view::{Forwarded, Progress, Slot, SlotState, Stage};
 
 /// Registro de segmentación del que EX ha tomado un operando en vez del valor leído en ID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -71,7 +71,7 @@ impl Latch<Uop> {
         &self,
         stage: Stage,
         state: SlotState,
-        bypasses: [Option<Bypass>; 2],
+        bypasses: [Option<Forwarded>; 2],
     ) -> Option<Slot> {
         match self {
             Latch::Bubble => None,
