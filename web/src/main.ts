@@ -258,14 +258,25 @@ class Workbench {
     this.#showModel();
   }
 
+  #currentModel(): ModelInfo | undefined {
+    return this.#core.models.find((info) => info.id === this.#machine.model);
+  }
+
   #showModel(): void {
-    const model = this.#core.models.find((info) => info.id === this.#machine.model);
+    const model = this.#currentModel();
     if (model === undefined) {
       return;
     }
     this.#ui.model.title = model.title;
     this.#ui.modelNote.textContent = modelNote(model);
     this.#ui.modelNote.dataset.warning = String(!model.equivalent);
+  }
+
+  #renderDatapath(snapshot: Snapshot | null): void {
+    const model = this.#currentModel();
+    if (model !== undefined) {
+      this.#datapath.render(model, snapshot);
+    }
   }
 
   // Cambiar de procesador empieza de cero con el mismo programa; los puntos de parada viven en
@@ -520,7 +531,7 @@ class Workbench {
       this.#editor.showLocation(null);
       this.#registers.render(null);
       this.#memory.clear();
-      this.#datapath.render(null);
+      this.#renderDatapath(null);
       return;
     }
     let snapshot: Snapshot;
@@ -545,7 +556,7 @@ class Workbench {
     ui.runStatus.textContent = describeRun(snapshot, running, this.#breakpointLine);
 
     this.#registers.render(snapshot);
-    this.#datapath.render(snapshot);
+    this.#renderDatapath(snapshot);
     this.#memory.render(snapshot, {
       labels: this.#labels,
       registers: this.#core.registers,
