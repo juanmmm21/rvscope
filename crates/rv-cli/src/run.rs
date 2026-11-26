@@ -5,8 +5,8 @@ use std::io::{self, BufRead, Write};
 
 use rv_asm::Program;
 use rv_core::{
-    AccessKind, FiveStage, Halt, MapError, MemoryError, Processor, Retired, SingleCycle, Stats,
-    Trap,
+    AccessKind, FiveStage, Halt, Hazards, MapError, MemoryError, Processor, Retired, SingleCycle,
+    Stats, Trap,
 };
 use rv_isa::{Reg, RegisterStyle};
 
@@ -19,13 +19,15 @@ pub const DEFAULT_MAX_CYCLES: u64 = 10_000_000;
 pub enum Model {
     SingleCycle,
     FiveStageNoHazards,
+    FiveStageStalls,
 }
 
 impl Model {
     /// Nombre de cada modelo en la línea de comandos, en el orden en que se listan.
-    pub const NAMES: [(&'static str, Model); 2] = [
+    pub const NAMES: [(&'static str, Model); 3] = [
         ("un-ciclo", Model::SingleCycle),
         ("5-etapas-sin-riesgos", Model::FiveStageNoHazards),
+        ("5-etapas-burbujas", Model::FiveStageStalls),
     ];
 
     pub fn parse(name: &str) -> Option<Model> {
@@ -38,7 +40,8 @@ impl Model {
     fn boot(self, program: &Program) -> Result<Box<dyn Processor>, MapError> {
         Ok(match self {
             Model::SingleCycle => Box::new(SingleCycle::new(program)?),
-            Model::FiveStageNoHazards => Box::new(FiveStage::new(program)?),
+            Model::FiveStageNoHazards => Box::new(FiveStage::new(program, Hazards::Ignore)?),
+            Model::FiveStageStalls => Box::new(FiveStage::new(program, Hazards::Stall)?),
         })
     }
 }
