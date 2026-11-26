@@ -312,7 +312,23 @@ button:disabled {
   opacity: 0.6;
 }
 
+select {
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+select:hover {
+  background: var(--surface);
+}
+
 button:focus-visible,
+select:focus-visible,
 input:focus-visible,
 .console-output:focus-visible {
   outline: 2px solid var(--accent);
@@ -344,6 +360,21 @@ button.primary[aria-pressed='true'] {
 
 .run-status[data-state='running'] {
   color: var(--accent);
+}
+
+/* Debajo de la barra, a todo lo ancho: el nombre largo del modelo y, en el que no detecta
+   riesgos, por qué puede no dar lo mismo que el de un ciclo. */
+.model-note {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.model-note[data-warning='true'] {
+  padding-left: 0.6rem;
+  border-left: 2px solid var(--danger);
+  color: var(--fg);
 }
 
 .run-status[data-state='error'] {

@@ -32,7 +32,9 @@ export interface AssembleReport {
 
 export interface ModelInfo {
   readonly id: string;
+  // Nombre largo y el corto del selector.
   readonly title: string;
+  readonly label: string;
   readonly equivalent: boolean;
 }
 

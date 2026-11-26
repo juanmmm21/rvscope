@@ -6,6 +6,7 @@ import {
   type Core,
   type Label,
   type Machine,
+  type ModelInfo,
   type RunStop,
   type Snapshot,
 } from './core';
@@ -14,6 +15,7 @@ import { MemoryPanel, RegisterPanel, type MemoryElements } from './inspect/panel
 import { breakpointAddresses, executionLocation, sourceMap, type SourceMap } from './run/location';
 import { Runner, browserScheduler } from './run/runner';
 import { DEFAULT_SPEED_INDEX, SPEEDS, speedAt } from './run/speed';
+import { plural, runCounters } from './run/stats';
 
 // Pantalla de trabajo: editor, controles de ejecución, registros y consola. Todo lo que pasa
 // en el procesador lo dice el núcleo; aquí solo se le piden operaciones y se pinta la foto.
@@ -30,8 +32,32 @@ function element<T extends HTMLElement>(selector: string, type: new () => T): T 
   return found;
 }
 
-function plural(count: number, one: string, many: string): string {
-  return `${String(count)} ${count === 1 ? one : many}`;
+// El modelo elegido se recuerda entre visitas; si el almacenamiento no está disponible (modo
+// privado, cuota), simplemente se empieza por el de un ciclo.
+const MODEL_KEY = 'rvscope.model';
+
+function storedModel(models: readonly ModelInfo[]): string | null {
+  try {
+    const id = window.localStorage.getItem(MODEL_KEY);
+    return models.some((model) => model.id === id) ? id : null;
+  } catch (error: unknown) {
+    console.warn('rvscope: no se pudo leer el modelo guardado', error);
+    return null;
+  }
+}
+
+function storeModel(id: string): void {
+  try {
+    window.localStorage.setItem(MODEL_KEY, id);
+  } catch (error: unknown) {
+    console.warn('rvscope: no se pudo guardar el modelo', error);
+  }
+}
+
+function modelNote(model: ModelInfo): string {
+  return model.equivalent
+    ? model.title
+    : `${model.title}: si una instrucción usa un registro que otra muy cercana aún no ha escrito, lee el valor viejo y el resultado puede no coincidir con el del procesador de un ciclo.`;
 }
 
 function describeError(error: unknown): string {
@@ -55,12 +81,7 @@ function renderAssembly(report: AssembleReport, target: HTMLElement): void {
 
 // Frase de estado de la ejecución: dónde está y por qué se paró.
 function describeRun(snapshot: Snapshot, running: boolean, breakpointLine: number | null): string {
-  const { stats } = snapshot;
-  const counters = [
-    `ciclo ${String(stats.cycles)}`,
-    plural(stats.retired, 'instrucción', 'instrucciones'),
-    `CPI ${stats.cpi === null ? '—' : stats.cpi.toFixed(2)}`,
-  ].join(' · ');
+  const counters = runCounters(snapshot).join(' · ');
   const halt = snapshot.halt;
   let state: string;
   if (running) {
@@ -84,6 +105,8 @@ function describeRun(snapshot: Snapshot, running: boolean, breakpointLine: numbe
 }
 
 interface Controls {
+  readonly model: HTMLSelectElement;
+  readonly modelNote: HTMLElement;
   readonly assemble: HTMLButtonElement;
   readonly reset: HTMLButtonElement;
   readonly stepBack: HTMLButtonElement;
@@ -104,6 +127,8 @@ interface Controls {
 
 function findControls(): Controls {
   return {
+    model: element('#model', HTMLSelectElement),
+    modelNote: element('#model-note', HTMLElement),
     assemble: element('#assemble', HTMLButtonElement),
     reset: element('#reset', HTMLButtonElement),
     stepBack: element('#step-back', HTMLButtonElement),
@@ -165,6 +190,7 @@ class Workbench {
     this.#memory = new MemoryPanel(this.#ui.memory, (error) => {
       this.#fail(error);
     });
+    this.#setupModels();
     this.#ui.speed.max = String(SPEEDS.length - 1);
     this.#ui.speed.value = String(DEFAULT_SPEED_INDEX);
     this.#runner = new Runner(
@@ -200,8 +226,56 @@ class Workbench {
     this.#assemble();
   }
 
+  #setupModels(): void {
+    const select = this.#ui.model;
+    for (const model of this.#core.models) {
+      const option = document.createElement('option');
+      option.value = model.id;
+      option.textContent = model.label;
+      option.title = model.title;
+      select.append(option);
+    }
+    const stored = storedModel(this.#core.models);
+    if (stored !== null) {
+      this.#machine.setModel(stored);
+    }
+    select.value = this.#machine.model;
+    this.#showModel();
+  }
+
+  #showModel(): void {
+    const model = this.#core.models.find((info) => info.id === this.#machine.model);
+    if (model === undefined) {
+      return;
+    }
+    this.#ui.model.title = model.title;
+    this.#ui.modelNote.textContent = modelNote(model);
+    this.#ui.modelNote.dataset.warning = String(!model.equivalent);
+  }
+
+  // Cambiar de procesador empieza de cero con el mismo programa; los puntos de parada viven en
+  // la sesión y se conservan.
+  #changeModel(id: string): void {
+    this.#runner.stop();
+    this.#resumeAfterInput = false;
+    this.#breakpointLine = null;
+    try {
+      this.#machine.setModel(id);
+    } catch (error: unknown) {
+      this.#ui.model.value = this.#machine.model;
+      this.#fail(error);
+      return;
+    }
+    storeModel(id);
+    this.#showModel();
+    this.#render();
+  }
+
   #bind(): void {
     const ui = this.#ui;
+    ui.model.addEventListener('change', () => {
+      this.#changeModel(ui.model.value);
+    });
     ui.assemble.addEventListener('click', () => {
       this.#assemble();
     });
@@ -300,7 +374,6 @@ class Workbench {
     this.#runner.stop();
     this.#resumeAfterInput = false;
     this.#breakpointLine = null;
-    this.#lastOutput = '';
     try {
       const report = this.#machine.assemble(this.#editor.source());
       this.#editor.showReport(report);

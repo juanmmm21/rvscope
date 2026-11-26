@@ -14,6 +14,10 @@
       <span class="label" id="core-status" role="status">cargando núcleo…</span>
     </header>
     <nav class="controls" aria-label="Ejecución">
+      <div class="control-group model">
+        <label class="label" for="model">Procesador</label>
+        <select id="model" aria-describedby="model-note"></select>
+      </div>
       <div class="control-group">
         <button type="button" id="assemble" aria-keyshortcuts="Control+S Meta+S">Ensamblar</button>
         <button type="button" id="reset">Reiniciar</button>
@@ -31,6 +35,7 @@
         <output id="speed-value" for="speed" class="speed-value"></output>
       </div>
       <p id="run-status" class="run-status" role="status" aria-live="polite"></p>
+      <p id="model-note" class="model-note" aria-live="polite"></p>
     </nav>
     <main id="app">
       <div class="primary">
