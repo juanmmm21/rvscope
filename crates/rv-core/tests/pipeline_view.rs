@@ -9,8 +9,8 @@ use std::path::Path;
 
 use rv_asm::{Layout, Program, assemble, assemble_with};
 use rv_core::{
-    DualIssue, FiveStage, Hazards, PipelineView, Processor, SingleCycle, Slot, SlotState, Stage,
-    Trap,
+    AluFunction, DualIssue, FiveStage, Hazards, Operation, PcSource, PipelineView, Processor,
+    SingleCycle, Slot, SlotState, Stage, Trap, Wires,
 };
 
 type Factory = fn(&Program) -> Box<dyn Processor>;
@@ -178,6 +178,98 @@ fn the_view_matches_on_the_riscv_tests() {
         }
     }
     assert_eq!(checked, 48);
+}
+
+/// Los cables que se dibujan cuentan lo mismo que lo que calcula el modelo: la ALU da el
+/// resultado, la dirección o la decisión del salto, y el siguiente `pc` sale de donde dice
+/// `pc_source`.
+fn check_wires(name: &str, slot: &Slot) -> usize {
+    let Some(wires) = Wires::of(slot) else {
+        return 0;
+    };
+    let Some(control) = slot.control else {
+        return 0;
+    };
+    let Some(next_pc) = slot.next_pc else {
+        assert_eq!((wires.alu, wires.pc_source), (None, None), "{name}");
+        return 0;
+    };
+    let alu = wires.alu;
+    match control.operation {
+        Operation::Alu(..) | Operation::Lui | Operation::Auipc => {
+            assert_eq!(alu.map(|alu| alu.out), slot.result, "{name} {slot:?}");
+        }
+        Operation::Load(_) | Operation::Store(_) => {
+            assert_eq!(alu.map(|alu| alu.out), slot.address, "{name} {slot:?}");
+        }
+        Operation::Jalr => {
+            assert_eq!(
+                alu.map(|alu| alu.out & !1),
+                Some(next_pc),
+                "{name} {slot:?}"
+            );
+        }
+        Operation::Branch(_) => {
+            let alu = alu.unwrap();
+            assert!(matches!(alu.function, AluFunction::Compare(_)), "{name}");
+            assert!(alu.out <= 1, "{name}");
+        }
+        Operation::Jal | Operation::Fence | Operation::Ecall | Operation::Ebreak => {
+            assert_eq!(alu, None, "{name}");
+        }
+    }
+    let expected = match wires.pc_source.unwrap() {
+        PcSource::Sequential => wires.pc_plus_4,
+        PcSource::Target => wires.target.unwrap(),
+        PcSource::Alu => alu.unwrap().out & !1,
+    };
+    assert_eq!(expected, next_pc, "{name} {slot:?}");
+    if control.write_source == Some(rv_core::WriteSource::Link) {
+        assert_eq!(slot.result, Some(wires.pc_plus_4), "{name}");
+    }
+    1
+}
+
+fn check_all_wires(name: &str, program: &Program) -> usize {
+    let mut checked = 0;
+    let models: [(&str, Factory); 4] = [
+        ("un ciclo", |program| {
+            Box::new(SingleCycle::new(program).unwrap())
+        }),
+        PIPELINED[0],
+        PIPELINED[1],
+        PIPELINED[2],
+    ];
+    for (model, factory) in models {
+        let mut cpu = factory(program);
+        for (_, view) in record(cpu.as_mut()) {
+            for (_, _, slot) in view.slots() {
+                checked += check_wires(&format!("{model} en {name}"), slot);
+            }
+        }
+    }
+    checked
+}
+
+#[test]
+fn the_wires_agree_with_what_every_model_computes() {
+    for (name, source) in [("factorial", FACTORIAL), ("mixto", MIXED)] {
+        assert!(check_all_wires(name, &assemble(source).unwrap()) > 0);
+    }
+    let layout = Layout {
+        text_base: 0x8000_0000,
+        data_base: 0x1000_0000,
+    };
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/riscv-tests");
+    for suite in ["rv32ui", "rv32um"] {
+        for entry in fs::read_dir(root.join(suite)).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|ext| ext == "s") {
+                let program = assemble_with(&fs::read_to_string(&path).unwrap(), layout).unwrap();
+                check_all_wires(&path.display().to_string(), &program);
+            }
+        }
+    }
 }
 
 #[test]
