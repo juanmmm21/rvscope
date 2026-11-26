@@ -7,12 +7,12 @@
 //! es determinista, así que basta con recordar cuántos pasos se dieron y en qué momento llegó
 //! cada entrada de la consola.
 
-use rv_asm::{AsmError, Program};
+use rv_asm::{AsmError, DIRECTIVES, MODIFIERS, Program};
 use rv_core::{
     DataAccess, Halt, Machine, MapError, Model, PipelineView, Processor, Region, RegisterWrite,
     Retired, SlotState, Stage, Stats, Trap,
 };
-use rv_isa::RegisterStyle;
+use rv_isa::{INSTRUCTIONS, PSEUDO_INSTRUCTIONS, Reg, RegisterStyle};
 use serde::Serialize;
 use thiserror::Error;
 
@@ -61,6 +61,19 @@ pub struct ListingLine {
 pub struct Label {
     pub name: String,
     pub address: u32,
+}
+
+/// Palabras que reconoce el ensamblador, para que el editor las resalte sin tener su propia
+/// lista: todo sale de las tablas de `rv-isa` y `rv-asm`.
+#[derive(Clone, Debug, Serialize)]
+pub struct Vocabulary {
+    pub instructions: Vec<&'static str>,
+    pub pseudo_instructions: Vec<&'static str>,
+    pub directives: Vec<&'static str>,
+    /// Nombres ABI y numéricos (`a0` y `x10`), más `fp`.
+    pub registers: Vec<&'static str>,
+    /// Sin el `%`.
+    pub modifiers: Vec<&'static str>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -404,6 +417,21 @@ impl Session {
                 equivalent: model.is_equivalent(),
             })
             .collect()
+    }
+
+    pub fn vocabulary() -> Vocabulary {
+        let mut registers: Vec<&'static str> = (0..32u8)
+            .filter_map(Reg::new)
+            .flat_map(|reg| [reg.abi_name(), reg.numeric_name()])
+            .collect();
+        registers.push("fp");
+        Vocabulary {
+            instructions: INSTRUCTIONS.iter().map(|spec| spec.name).collect(),
+            pseudo_instructions: PSEUDO_INSTRUCTIONS.iter().map(|spec| spec.name).collect(),
+            directives: DIRECTIVES.iter().map(|spec| spec.name).collect(),
+            registers,
+            modifiers: MODIFIERS.to_vec(),
+        }
     }
 
     pub fn model(&self) -> Model {

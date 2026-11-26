@@ -32,6 +32,13 @@ pub fn registers() -> Result<JsValue, JsError> {
     to_js(&rv_isa::REGISTERS)
 }
 
+/// Mnemónicos, pseudoinstrucciones, directivas, registros y modificadores que entiende el
+/// ensamblador (`Vocabulary`), para el resaltado del editor.
+#[wasm_bindgen]
+pub fn vocabulary() -> Result<JsValue, JsError> {
+    to_js(&Session::vocabulary())
+}
+
 /// `None` se convierte en `null` y los mapas en objetos planos, como en JSON: así los tipos
 /// de TypeScript son simples y una instantánea se puede guardar tal cual.
 fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsError> {

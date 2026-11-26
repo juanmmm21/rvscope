@@ -329,3 +329,18 @@ fn every_model_is_listed() {
     assert_eq!(models[0].id, "un-ciclo");
     assert!(!models[1].equivalent);
 }
+
+#[test]
+fn vocabulary_lists_every_word_the_assembler_knows() {
+    let vocabulary = Session::vocabulary();
+    assert_eq!(vocabulary.instructions.len(), rv_isa::INSTRUCTIONS.len());
+    assert!(vocabulary.instructions.contains(&"addi"));
+    assert!(vocabulary.pseudo_instructions.contains(&"li"));
+    assert!(vocabulary.directives.contains(&".word"));
+    assert_eq!(vocabulary.modifiers, ["hi", "lo"]);
+    // 32 nombres ABI, 32 numéricos y `fp`; todos los entiende el ensamblador.
+    assert_eq!(vocabulary.registers.len(), 65);
+    for name in &vocabulary.registers {
+        assert!(rv_isa::Reg::parse(name).is_some(), "{name}");
+    }
+}
