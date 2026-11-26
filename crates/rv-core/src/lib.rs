@@ -1,6 +1,7 @@
 //! Memoria, modelos de procesador y llamadas al sistema de rvscope.
 
 mod exec;
+mod five_stage;
 mod map;
 mod memory;
 mod processor;
@@ -9,6 +10,7 @@ mod state;
 mod syscall;
 
 pub use exec::{AluOp, AluSource, BranchCond, LoadOp, Operation};
+pub use five_stage::FiveStage;
 pub use map::{
     DATA_SIZE, INITIAL_SP, IO_BASE, IO_END, MapError, MemoryMap, Permissions, Region, STACK_BASE,
     STACK_END, SegmentKind,
