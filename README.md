@@ -135,6 +135,8 @@ npm run dev
 
 Shortcuts: <kbd>F10</kbd> step, <kbd>Shift</kbd>+<kbd>F10</kbd> step back, <kbd>Ctrl</kbd>+<kbd>Enter</kbd> run or pause, <kbd>F9</kbd> toggle a breakpoint on the cursor line, <kbd>Ctrl</kbd>+<kbd>S</kbd> assemble now (it also reassembles as you type). With the memory table focused, the arrow keys move one row and <kbd>Page Up</kbd>/<kbd>Page Down</kbd> one page.
 
+The whole page works from the keyboard: the first <kbd>Tab</kbd> offers a skip link straight into the editor, and <kbd>Esc</kbd> then <kbd>Tab</kbd> leaves the editor (inside it, <kbd>Tab</kbd> indents). The theme follows the operating system unless you pin light or dark in the top bar; the choice is remembered and applied before the first paint. Both themes meet WCAG AA contrast, motion is limited to what `prefers-reduced-motion` allows, and the layout collapses to a single column on phones.
+
 ### Supported assembly
 
 - Registers by number (`x0`–`x31`) or ABI name (`zero`, `ra`, `sp`, `a0`, `fp`…).
@@ -174,7 +176,7 @@ cargo test --workspace
 cd web
 npm run wasm && npm run lint && npm run typecheck && npm test && npm run build
 npx playwright install chromium   # once
-npm run e2e                       # UI flows against the production build
+npm run e2e                       # UI flows, axe accessibility and keyboard checks against the production build
 ```
 
 CI runs the same checks on every push to `main`.
