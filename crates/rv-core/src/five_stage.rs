@@ -893,4 +893,148 @@ mod tests {
         assert_eq!(cpu.state().console.output_text(), "n? 42");
         assert_eq!(cpu.name(), "5 etapas con detección de riesgos y burbujas");
     }
+
+    fn boot_forwarding(source: &str) -> FiveStage {
+        FiveStage::new(&program(source), Hazards::Forward).unwrap()
+    }
+
+    #[test]
+    fn forwarding_feeds_alu_results_without_bubbles() {
+        let source = "li a0, 5\naddi a1, a0, 1\naddi a2, a0, 2\nadd a3, a1, a2\nebreak\n";
+        let mut cpu = boot_forwarding(source);
+        for _ in 0..3 {
+            cpu.step();
+        }
+        // li está en MEM y addi a1 en EX: a0 llega desde EX/MEM.
+        assert_eq!(cpu.stage_pcs(), [Some(8), Some(4), Some(0), None, None]);
+        assert_eq!(cpu.bypasses(), [None, None]);
+        cpu.step();
+        assert_eq!(cpu.bypasses(), [Some(Bypass::ExMem), None]);
+        cpu.step();
+        // addi a2 toma a0 de li, que está en WB.
+        assert_eq!(cpu.bypasses(), [Some(Bypass::MemWb), None]);
+        cpu.step();
+        // add a3 toma a1 de WB y a2 de MEM.
+        assert_eq!(cpu.bypasses(), [Some(Bypass::MemWb), Some(Bypass::ExMem)]);
+        cpu.run(100);
+        assert_eq!(
+            (read(&cpu, "a1"), read(&cpu, "a2"), read(&cpu, "a3")),
+            (6, 7, 13)
+        );
+        assert_eq!(cpu.stalls(), 0);
+        // 4 retiradas + 4 de llenado: como un programa sin dependencias.
+        assert_eq!(cpu.stats().cycles, 8);
+    }
+
+    #[test]
+    fn forwarding_prefers_the_most_recent_producer() {
+        let cpu = assert_model_matches_single_cycle(
+            "li a0, 1\nli a0, 2\naddi a1, a0, 0\nebreak\n",
+            Hazards::Forward,
+        );
+        assert_eq!(read(&cpu, "a1"), 2);
+        // x0 nunca se adelanta aunque alguien «lo escriba».
+        let cpu = assert_model_matches_single_cycle(
+            "addi zero, zero, 9\nadd a0, zero, zero\nebreak\n",
+            Hazards::Forward,
+        );
+        assert_eq!(read(&cpu, "a0"), 0);
+    }
+
+    #[test]
+    fn load_use_costs_exactly_one_bubble() {
+        let source = "li t0, 7\nsw t0, -4(sp)\nlw a0, -4(sp)\naddi a1, a0, 1\nebreak\n";
+        let mut cpu = boot_forwarding(source);
+        for _ in 0..5 {
+            cpu.step();
+        }
+        // lw en EX y addi esperando en ID.
+        assert_eq!(
+            cpu.stage_pcs(),
+            [Some(16), Some(12), Some(8), Some(4), Some(0)]
+        );
+        cpu.step();
+        assert_eq!(
+            cpu.stage_pcs(),
+            [Some(16), Some(12), None, Some(8), Some(4)]
+        );
+        cpu.step();
+        // El valor cargado llega desde MEM/WB.
+        assert_eq!(cpu.bypasses(), [Some(Bypass::MemWb), None]);
+        cpu.run(100);
+        assert_eq!(read(&cpu, "a1"), 8);
+        assert_eq!(cpu.stalls(), 1);
+        assert_eq!(cpu.stats().cycles, 4 + 4 + 1);
+
+        // Con una instrucción en medio no hace falta esperar.
+        let mut cpu =
+            boot_forwarding("li t0, 7\nsw t0, -4(sp)\nlw a0, -4(sp)\nnop\nmv a1, a0\nebreak\n");
+        cpu.run(100);
+        assert_eq!((read(&cpu, "a1"), cpu.stalls()), (7, 0));
+    }
+
+    #[test]
+    fn stores_and_branches_receive_forwarded_operands() {
+        // El sw recibe t0 adelantado como dato y la dirección del addi de delante.
+        let cpu = assert_model_matches_single_cycle(
+            "li t0, 7\naddi t1, sp, -8\nsw t0, 0(t1)\nlw a0, -8(sp)\nbnez a0, end\n\
+             li a1, 1\nend: li t2, 1\nbeq t2, zero, bad\nauipc t3, 0\njalr zero, 12(t3)\nbad: ebreak\nebreak\n",
+            Hazards::Forward,
+        );
+        assert_eq!((read(&cpu, "a0"), read(&cpu, "a1")), (7, 0));
+        // beq y jalr deciden con t2 y t3 adelantados: se para en el segundo ebreak.
+        assert_eq!(cpu.halt().map(|halt| halt.pc), Some(read(&cpu, "t3") + 12));
+        // Un enlace de jal también se adelanta.
+        let cpu = assert_model_matches_single_cycle(
+            "jal ra, next\nnext: addi a0, ra, 0\nebreak\n",
+            Hazards::Forward,
+        );
+        assert_eq!(read(&cpu, "a0"), 4);
+    }
+
+    #[test]
+    fn forwarding_matches_the_single_cycle_model_in_fewer_cycles() {
+        let factorial = include_str!("../../../examples/factorial.s");
+        let forwarding = assert_model_matches_single_cycle(factorial, Hazards::Forward);
+        let stalling = assert_model_matches_single_cycle(factorial, Hazards::Stall);
+        assert_eq!(read(&forwarding, "a0"), 720);
+        assert!(forwarding.stats().cycles < stalling.stats().cycles);
+        assert!(forwarding.stalls() < stalling.stalls());
+
+        let cpu = assert_model_matches_single_cycle(HAZARD_FREE, Hazards::Forward);
+        let mut unchecked = boot(HAZARD_FREE);
+        unchecked.run(10_000);
+        assert_eq!(cpu.stats(), unchecked.stats());
+        assert_model_matches_single_cycle("li a0, 1\nlw a0, 2(sp)\nli a1, 7\n", Hazards::Forward);
+        assert_model_matches_single_cycle("li t0, 6\njalr ra, 0(t0)\nnop\n", Hazards::Forward);
+        assert_eq!(cpu.name(), "5 etapas con forwarding y detección de riesgos");
+    }
+
+    #[test]
+    fn forwarding_keeps_ecalls_in_step_with_the_single_cycle_model() {
+        let source = ".data\nprompt: .string \"n? \"\n.text\n\
+             la a0, prompt\nli a7, 4\necall\nli a7, 5\necall\nslli a0, a0, 1\nli a7, 1\n\
+             ecall\nli a7, 10\necall\n";
+        let mut cpu = boot_forwarding(source);
+        assert_eq!(cpu.run(1_000), RunOutcome::AwaitingInput);
+        cpu.console_mut().push_input("21\n");
+        cpu.run(1_000);
+        let mut reference = SingleCycle::new(&program(source)).unwrap();
+        reference.console_mut().push_input("21\n");
+        reference.run(1_000);
+        assert_eq!(cpu.state(), reference.state());
+        assert_eq!(cpu.state().console.output_text(), "n? 42");
+    }
+
+    #[test]
+    fn other_models_never_forward() {
+        for hazards in [Hazards::Ignore, Hazards::Stall] {
+            let mut cpu =
+                FiveStage::new(&program("li a0, 5\naddi a1, a0, 1\nebreak\n"), hazards).unwrap();
+            for _ in 0..10 {
+                cpu.step();
+                assert_eq!(cpu.bypasses(), [None, None]);
+            }
+        }
+    }
 }
