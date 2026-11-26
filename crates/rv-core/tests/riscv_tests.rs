@@ -26,12 +26,15 @@ const MAX_CYCLES: u64 = 1_000_000;
 
 type Factory = fn(&Program) -> Box<dyn Processor>;
 
-const MODELS: [(&str, Factory); 2] = [
+const MODELS: [(&str, Factory); 3] = [
     ("un ciclo", |program| {
         Box::new(SingleCycle::new(program).unwrap())
     }),
     ("5 etapas con burbujas", |program| {
         Box::new(FiveStage::new(program, Hazards::Stall).unwrap())
+    }),
+    ("5 etapas con forwarding", |program| {
+        Box::new(FiveStage::new(program, Hazards::Forward).unwrap())
     }),
 ];
 
