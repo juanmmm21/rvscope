@@ -71,3 +71,44 @@ body {
 .label[data-state='error'] {
   color: var(--danger);
 }
+
+main {
+  display: grid;
+  gap: 1.5rem;
+  max-width: 64rem;
+  padding: 1.25rem;
+}
+
+.panel h2 {
+  margin: 0 0 0.75rem;
+  font-weight: 400;
+}
+
+.summary p {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+.registers {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  border-top: 1px solid var(--line);
+}
+
+.register {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.3rem 0.75rem 0.3rem 0;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+.register-name {
+  color: var(--muted);
+}
+
+.register[data-changed='true'] .register-value {
+  color: var(--accent);
+}
