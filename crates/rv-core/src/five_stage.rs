@@ -215,6 +215,8 @@ impl Processor for FiveStage {
         if self.halt.is_some() {
             return Vec::new();
         }
+        // Se borra antes de nada: un ciclo que acaba en parada tampoco está esperando entrada.
+        self.awaiting_input = false;
         let retiring = self.mem_wb.slot(Stage::Wb, SlotState::Active, [None; 2]);
 
         let mut retired = Vec::new();
@@ -243,7 +245,6 @@ impl Processor for FiveStage {
                 }
             },
         }
-        self.awaiting_input = false;
         self.stats.cycles += 1;
         self.stats.retired += retired.len() as u64;
         let retiring = retiring.map(|mut slot| {
