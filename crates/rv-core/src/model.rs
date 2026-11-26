@@ -61,6 +61,17 @@ impl Model {
         }
     }
 
+    /// Nombre corto para el selector de la interfaz, donde no cabe el largo.
+    pub fn label(self) -> &'static str {
+        match self {
+            Model::SingleCycle => "Un ciclo",
+            Model::FiveStageNoHazards => "5 etapas · sin riesgos",
+            Model::FiveStageStalls => "5 etapas · burbujas",
+            Model::FiveStageForwarding => "5 etapas · forwarding",
+            Model::DualIssue => "2 vías",
+        }
+    }
+
     /// Cierto si el modelo da el mismo resultado que el de un ciclo con cualquier programa; el
     /// que no detecta riesgos solo lo hace con programas sin dependencias cercanas.
     pub fn is_equivalent(self) -> bool {
@@ -165,6 +176,13 @@ mod tests {
             assert_eq!(Model::from_id(model.id()), Some(model));
         }
         assert_eq!(Model::from_id("6-etapas"), None);
+    }
+
+    #[test]
+    fn labels_are_short_and_unique() {
+        let labels: std::collections::HashSet<&str> = Model::ALL.map(Model::label).into();
+        assert_eq!(labels.len(), Model::ALL.len());
+        assert!(labels.iter().all(|label| label.chars().count() <= 24));
     }
 
     #[test]

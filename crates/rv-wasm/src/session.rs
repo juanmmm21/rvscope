@@ -80,6 +80,7 @@ pub struct Vocabulary {
 pub struct ModelInfo {
     pub id: &'static str,
     pub title: &'static str,
+    pub label: &'static str,
     /// `false` en el modelo que no detecta riesgos: con dependencias da otro resultado.
     pub equivalent: bool,
 }
@@ -414,6 +415,7 @@ impl Session {
             .map(|model| ModelInfo {
                 id: model.id(),
                 title: model.title(),
+                label: model.label(),
                 equivalent: model.is_equivalent(),
             })
             .collect()

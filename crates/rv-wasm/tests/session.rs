@@ -328,6 +328,25 @@ fn every_model_is_listed() {
     assert_eq!(models.len(), Model::ALL.len());
     assert_eq!(models[0].id, "un-ciclo");
     assert!(!models[1].equivalent);
+    let mut labels: Vec<&str> = models.iter().map(|model| model.label).collect();
+    labels.sort_unstable();
+    labels.dedup();
+    assert_eq!(labels.len(), models.len());
+}
+
+#[test]
+fn changing_model_keeps_program_and_breakpoints() {
+    let mut session = session(FACTORIAL, Model::SingleCycle);
+    // `call factorial` está en 0x08: el primer punto de parada tras la entrada.
+    session.set_breakpoints(&[8]);
+    for model in Model::ALL.into_iter().filter(|model| model.is_equivalent()) {
+        session.set_model(model.id()).unwrap();
+        assert_eq!(session.run(10_000).unwrap(), RunStop::Breakpoint { pc: 8 });
+        session.set_breakpoints(&[]);
+        assert_eq!(session.run(10_000).unwrap(), RunStop::Halted);
+        assert_eq!(session.snapshot().unwrap().registers[10], 720);
+        session.set_breakpoints(&[8]);
+    }
 }
 
 #[test]
