@@ -52,6 +52,14 @@ for (const scheme of ['dark', 'light'] as const) {
     await expect(page.locator('#run-status')).toContainText('ciclo 6 ·');
     await expectAccessible(page, 'a mitad de ejecución');
 
+    // Ruta de datos de 5 etapas con un salto, un adelantamiento y etapas vaciadas.
+    await page.locator('#model').selectOption('5-etapas-forwarding');
+    for (let index = 0; index < 6; index += 1) {
+      await page.locator('#step').click();
+    }
+    await expect(page.locator('#datapath-caption')).toContainText('(vaciada)');
+    await expectAccessible(page, 'con la ruta de datos de 5 etapas');
+
     await page.locator('#model').selectOption('5-etapas-sin-riesgos');
     await expect(page.locator('#model-note')).toHaveAttribute('data-warning', 'true');
     await page.locator('.cm-content').fill('addi a0, zero, 5000\n');

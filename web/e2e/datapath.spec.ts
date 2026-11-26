@@ -70,10 +70,60 @@ test('la ruta de datos del de un ciclo sigue al paso y al paso atrás', async ({
   );
 });
 
-test('la ruta de datos se oculta con los procesadores que aún no la tienen', async ({ page }) => {
+test('la ruta de datos de 5 etapas enseña el salto, el adelantamiento y lo vaciado', async ({
+  page,
+}) => {
   await open(page);
   await page.locator('#model').selectOption('5-etapas-forwarding');
+  const caption = page.locator('#datapath-caption');
+  await expect(page.locator('#datapath')).toBeVisible();
+  await expect(page.locator('.dp-latch')).toHaveCount(4);
+  await expect(page.locator('.dp-mux')).toHaveCount(6);
+  await expect(caption).toHaveText('Todavía no se ha ejecutado ningún ciclo.');
+
+  // Ciclo 6: `jalr` (del `call`) salta desde EX con `ra` adelantado de EX/MEM.
+  await stepTo(page, 0, 6);
+  await expect(caption).toContainText('EX jalr ra, 16(ra)');
+  await expect(caption).toContainText('operando A adelantado desde EX/MEM');
+  await expect(page.locator('.dp-stage[data-stage="if"]')).toHaveAttribute(
+    'data-condition',
+    'flushed',
+  );
+  await expect(page.locator('.dp-stage[data-stage="id"]')).toContainText('ID · vaciada');
+  await expect(wire(page, 'ex_alu_to_pc')).toHaveAttribute('data-active', 'true');
+  await expect(wire(page, 'forward_mem_a')).toHaveAttribute('data-active', 'true');
+  await expect(wire(page, 'ex_rs1')).toHaveAttribute('data-active', 'false');
+  await expect(wire(page, 'wb_write_back').locator('.dp-value')).toHaveText('0x00000006');
+
+  // Paso atrás: el `auipc` anterior aún no salta y el PC sigue con pc + 4.
+  await page.locator('#step-back').click();
+  await expect(caption).toContainText('EX auipc ra, 0x0');
+  await expect(wire(page, 'if_sequential')).toHaveAttribute('data-active', 'true');
+  await expect(wire(page, 'ex_alu_to_pc')).toHaveAttribute('data-active', 'false');
+});
+
+test('sin forwarding no hay multiplexores de adelantamiento y las burbujas se ven', async ({
+  page,
+}) => {
+  await open(page);
+  await page.locator('#model').selectOption('5-etapas-burbujas');
+  await expect(page.locator('.dp-mux')).toHaveCount(4);
+  await expect(wire(page, 'forward_mem_a')).toHaveCount(0);
+  // Ciclo 3: `lw` espera en ID al `auipc` que calcula su dirección.
+  await stepTo(page, 0, 3);
+  await expect(page.locator('#datapath-caption')).toContainText(
+    'ID lw a0, 0(a0) (retenida) · EX auipc a0, 0x10000 · MEM burbuja',
+  );
+  await expect(wire(page, 'next_pc')).toHaveAttribute('data-active', 'false');
+  await page.locator('#model').selectOption('5-etapas-forwarding');
+  await expect(page.locator('.dp-mux')).toHaveCount(6);
+});
+
+test('la ruta de datos se oculta con la doble emisión, que aún no la tiene', async ({ page }) => {
+  await open(page);
+  await page.locator('#model').selectOption('2-vias');
   await expect(page.locator('#datapath')).toBeHidden();
   await page.locator('#model').selectOption('un-ciclo');
   await expect(page.locator('#datapath')).toBeVisible();
+  await expect(page.locator('.dp-latch')).toHaveCount(0);
 });
