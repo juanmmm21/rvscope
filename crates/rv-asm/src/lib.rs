@@ -5,6 +5,7 @@
 //! devuelve la lista de errores con línea y columna.
 
 mod assembler;
+mod directives;
 mod error;
 mod eval;
 mod expand;
@@ -13,5 +14,6 @@ mod parser;
 mod program;
 
 pub use assembler::{assemble, assemble_with};
+pub use directives::{DIRECTIVES, DirectiveSpec, MODIFIERS};
 pub use error::{AsmError, Span};
 pub use program::{Layout, ListingEntry, Program, Segment};

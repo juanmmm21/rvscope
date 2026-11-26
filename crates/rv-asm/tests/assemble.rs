@@ -1,6 +1,6 @@
 //! Tests de integración del ensamblador con programas completos.
 
-use rv_asm::{AsmError, Program, assemble};
+use rv_asm::{AsmError, DIRECTIVES, MODIFIERS, Program, assemble};
 use rv_isa::{INSTRUCTIONS, Instruction, Operands, PSEUDO_INSTRUCTIONS, RegisterStyle};
 
 fn ok(source: &str) -> Program {
@@ -146,6 +146,27 @@ fn every_pseudo_instruction_example_assembles() {
         let program = ok(&source);
         let first = &program.listing[0];
         assert_eq!(first.pseudo, Some(pseudo.name), "{}", pseudo.example);
+    }
+}
+
+#[test]
+fn every_directive_example_assembles() {
+    let mut names: Vec<&str> = DIRECTIVES.iter().map(|spec| spec.name).collect();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(names.len(), DIRECTIVES.len(), "directivas repetidas");
+    for spec in &DIRECTIVES {
+        assert!(spec.example.starts_with(spec.name), "{}", spec.name);
+        let source = format!(".text\nmain:\nlabel: nop\n.data\n{}\n", spec.example);
+        ok(&source);
+    }
+    assert!(!errors(".frobnicate 1").is_empty());
+}
+
+#[test]
+fn every_modifier_is_accepted() {
+    for modifier in MODIFIERS {
+        ok(&format!("label: addi a0, a0, %{modifier}(label)"));
     }
 }
 
