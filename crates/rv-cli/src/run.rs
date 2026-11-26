@@ -5,8 +5,8 @@ use std::io::{self, BufRead, Write};
 
 use rv_asm::Program;
 use rv_core::{
-    AccessKind, FiveStage, Halt, Hazards, MapError, MemoryError, Processor, Retired, SingleCycle,
-    Stats, Trap,
+    AccessKind, DualIssue, FiveStage, Halt, Hazards, MapError, MemoryError, Processor, Retired,
+    SingleCycle, Stats, Trap,
 };
 use rv_isa::{Reg, RegisterStyle};
 
@@ -21,15 +21,17 @@ pub enum Model {
     FiveStageNoHazards,
     FiveStageStalls,
     FiveStageForwarding,
+    DualIssue,
 }
 
 impl Model {
     /// Nombre de cada modelo en la línea de comandos, en el orden en que se listan.
-    pub const NAMES: [(&'static str, Model); 4] = [
+    pub const NAMES: [(&'static str, Model); 5] = [
         ("un-ciclo", Model::SingleCycle),
         ("5-etapas-sin-riesgos", Model::FiveStageNoHazards),
         ("5-etapas-burbujas", Model::FiveStageStalls),
         ("5-etapas-forwarding", Model::FiveStageForwarding),
+        ("2-vias", Model::DualIssue),
     ];
 
     pub fn parse(name: &str) -> Option<Model> {
@@ -45,6 +47,7 @@ impl Model {
             Model::FiveStageNoHazards => Box::new(FiveStage::new(program, Hazards::Ignore)?),
             Model::FiveStageStalls => Box::new(FiveStage::new(program, Hazards::Stall)?),
             Model::FiveStageForwarding => Box::new(FiveStage::new(program, Hazards::Forward)?),
+            Model::DualIssue => Box::new(DualIssue::new(program)?),
         })
     }
 }
