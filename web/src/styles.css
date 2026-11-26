@@ -11,6 +11,16 @@
   --line: #25272a;
   --accent: #c4f27e;
   --danger: #ff8a7a;
+  --surface: #131517;
+  --selection: #2b3a44;
+  --syn-instruction: #e8e8e3;
+  --syn-pseudo: #d8d2b4;
+  --syn-directive: #b3aee0;
+  --syn-register: #9cc4d8;
+  --syn-number: #e3bb85;
+  --syn-string: #dcaccc;
+  --syn-label: #c8c9c2;
+  --code-line: 1.6;
   --font-sans: 'Geist Sans', system-ui, sans-serif;
   --font-mono: 'Geist Mono', ui-monospace, monospace;
   color-scheme: dark;
@@ -24,6 +34,15 @@
     --line: #d4d4cc;
     --accent: #3a720a;
     --danger: #a3271a;
+    --surface: #e6e6df;
+    --selection: #c9d9e3;
+    --syn-instruction: #16171a;
+    --syn-pseudo: #5a4d12;
+    --syn-directive: #4c3f9e;
+    --syn-register: #1d5872;
+    --syn-number: #7f4d00;
+    --syn-string: #84306a;
+    --syn-label: #34363a;
     color-scheme: light;
   }
 }
@@ -74,9 +93,15 @@ body {
 
 main {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) 22rem;
   gap: 1.5rem;
-  max-width: 64rem;
   padding: 1.25rem;
+}
+
+@media (max-width: 64rem) {
+  main {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .panel h2 {
@@ -84,10 +109,147 @@ main {
   font-weight: 400;
 }
 
-.summary p {
-  margin: 0;
-  font-family: var(--font-mono);
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+/* Editor y desensamblado comparten alto y tipografía para que cada fila quede a la altura de
+   su línea. */
+.source-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 26rem);
+  height: min(70vh, 40rem);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
   font-size: 0.85rem;
+}
+
+.editor {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.source-body:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.listing {
+  position: relative;
+  overflow: hidden;
+  border-left: 1px solid var(--line);
+  font-family: var(--font-mono);
+  line-height: var(--code-line);
+  color: var(--muted);
+  transition: opacity 120ms ease;
+}
+
+.listing[data-stale='true'] {
+  opacity: 0.45;
+}
+
+.listing-track {
+  position: relative;
+}
+
+.listing-row {
+  position: absolute;
+  inset-inline: 0;
+  display: flex;
+  gap: 1ch;
+  align-items: center;
+  padding-inline: 1ch;
+  white-space: nowrap;
+}
+
+.listing-address,
+.listing-code {
+  flex: none;
+}
+
+.listing-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg);
+}
+
+@media (max-width: 48rem) {
+  .source-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .listing,
+  .listing-head {
+    display: none;
+  }
+}
+
+.assembly-status {
+  margin: 0.5rem 0 0;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.assembly-status[data-state='error'] {
+  color: var(--danger);
+}
+
+.tok-instruction {
+  color: var(--syn-instruction);
+  font-weight: 500;
+}
+
+.tok-pseudo {
+  color: var(--syn-pseudo);
+  font-weight: 500;
+}
+
+.tok-directive {
+  color: var(--syn-directive);
+}
+
+.tok-register {
+  color: var(--syn-register);
+}
+
+.tok-number {
+  color: var(--syn-number);
+}
+
+.tok-string {
+  color: var(--syn-string);
+}
+
+.tok-label-def {
+  color: var(--syn-instruction);
+  font-weight: 500;
+}
+
+.tok-label,
+.tok-modifier {
+  color: var(--syn-label);
+}
+
+.tok-comment {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.tok-punctuation {
+  color: var(--muted);
+}
+
+.tok-invalid {
+  color: var(--danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .listing {
+    transition: none;
+  }
 }
 
 .registers {

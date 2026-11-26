@@ -14,9 +14,18 @@
       <span class="label" id="core-status" role="status">cargando núcleo…</span>
     </header>
     <main id="app">
-      <section class="panel" aria-labelledby="summary-title">
-        <h2 class="label" id="summary-title">Ejecución · factorial.s</h2>
-        <div id="summary" class="summary"></div>
+      <section class="panel source" aria-labelledby="source-title">
+        <div class="panel-head">
+          <h2 class="label" id="source-title">Código</h2>
+          <span class="label listing-head" aria-hidden="true"
+            >Dirección · Código máquina · Instrucción</span
+          >
+        </div>
+        <div class="source-body">
+          <div id="editor" class="editor"></div>
+          <div id="listing" class="listing" aria-label="Desensamblado por línea"></div>
+        </div>
+        <p id="assembly-status" class="assembly-status" role="status" aria-live="polite"></p>
       </section>
       <section class="panel" aria-labelledby="registers-title">
         <h2 class="label" id="registers-title">Registros</h2>

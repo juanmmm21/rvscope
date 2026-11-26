@@ -1,4 +1,4 @@
-import init, { Simulator, models, registers, version } from './wasm/pkg/rv_wasm.js';
+import init, { Simulator, models, registers, version, vocabulary } from './wasm/pkg/rv_wasm.js';
 
 // Formas de lo que serializa `crates/rv-wasm/src/session.rs`. Se escriben a mano: si cambia un
 // `Serialize` de allí, cambia aquí. `None` llega como `null`.
@@ -42,6 +42,15 @@ export interface RegisterInfo {
   readonly abi: string;
   readonly role: string;
   readonly saver: 'none' | 'caller' | 'callee';
+}
+
+export interface Vocabulary {
+  readonly instructions: readonly string[];
+  readonly pseudo_instructions: readonly string[];
+  readonly directives: readonly string[];
+  readonly registers: readonly string[];
+  // Sin el `%`.
+  readonly modifiers: readonly string[];
 }
 
 export type StepOutcome = 'stepped' | 'awaiting_input' | 'halted';
@@ -215,6 +224,7 @@ export interface Core {
   readonly version: string;
   readonly models: readonly ModelInfo[];
   readonly registers: readonly RegisterInfo[];
+  readonly vocabulary: Vocabulary;
   createMachine(): Machine;
 }
 
@@ -226,6 +236,7 @@ export function loadCore(): Promise<Core> {
     version: version(),
     models: models() as ModelInfo[],
     registers: registers() as RegisterInfo[],
+    vocabulary: vocabulary() as Vocabulary,
     createMachine: () => new Machine(),
   }));
   return ready;

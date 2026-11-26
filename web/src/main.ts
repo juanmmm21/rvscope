@@ -1,11 +1,14 @@
 import './styles.css';
 import factorialSource from '../../examples/factorial.s?raw';
-import { loadCore, type Core, type Snapshot } from './core';
+import { loadCore, type AssembleReport, type Core, type Machine, type Snapshot } from './core';
+import { createEditor } from './editor/editor';
 
-// Pantalla provisional de la fachada: ensambla el factorial de ejemplo, lo ejecuta y pinta
-// registros y estado. El editor y los controles de verdad llegan en las siguientes casillas.
+// Pantalla de trabajo: editor con el factorial de ejemplo, ensamblado al dejar de escribir y
+// registros del estado inicial. Los controles de ejecución llegan en la siguiente casilla.
 
-const RUN_BUDGET = 1_000_000;
+// Lo bastante corto para que parezca inmediato y lo bastante largo para no ensamblar con
+// cada tecla.
+const ASSEMBLE_DELAY_MS = 250;
 
 function element(selector: string): HTMLElement {
   const found = document.querySelector<HTMLElement>(selector);
@@ -17,6 +20,10 @@ function element(selector: string): HTMLElement {
 
 function hex(value: number): string {
   return `0x${(value >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function plural(count: number, one: string, many: string): string {
+  return `${String(count)} ${count === 1 ? one : many}`;
 }
 
 function renderRegisters(core: Core, snapshot: Snapshot, target: HTMLElement): void {
@@ -39,21 +46,33 @@ function renderRegisters(core: Core, snapshot: Snapshot, target: HTMLElement): v
   target.replaceChildren(...rows);
 }
 
-function renderSummary(snapshot: Snapshot, model: string, target: HTMLElement): void {
-  const cpi = snapshot.stats.cpi === null ? '—' : snapshot.stats.cpi.toFixed(2);
-  const ending = snapshot.halt === null ? 'sin terminar' : snapshot.halt.message;
-  const lines = [
-    model,
-    `${String(snapshot.stats.cycles)} ciclos · ${String(snapshot.stats.retired)} instrucciones · CPI ${cpi}`,
-    ending,
-  ];
-  target.replaceChildren(
-    ...lines.map((text) => {
-      const line = document.createElement('p');
-      line.textContent = text;
-      return line;
-    }),
-  );
+function renderAssembly(report: AssembleReport, target: HTMLElement): void {
+  if (report.ok) {
+    const bytes = report.listing.length * 4;
+    target.dataset.state = 'ok';
+    target.textContent = `ensamblado · ${plural(report.listing.length, 'instrucción', 'instrucciones')} · ${plural(bytes, 'byte', 'bytes')}`;
+    return;
+  }
+  const [first] = report.errors;
+  target.dataset.state = 'error';
+  target.textContent =
+    first === undefined
+      ? 'no se pudo ensamblar'
+      : `${plural(report.errors.length, 'error', 'errores')} · línea ${String(first.line)}, columna ${String(first.column)}: ${first.message}`;
+}
+
+function assembleAndShow(
+  core: Core,
+  machine: Machine,
+  source: string,
+  show: (report: AssembleReport) => void,
+): void {
+  const report = machine.assemble(source);
+  show(report);
+  renderAssembly(report, element('#assembly-status'));
+  if (report.ok) {
+    renderRegisters(core, machine.snapshot(), element('#registers'));
+  }
 }
 
 async function boot(): Promise<void> {
@@ -64,20 +83,24 @@ async function boot(): Promise<void> {
     status.dataset.state = 'ready';
 
     const machine = core.createMachine();
-    const report = machine.assemble(factorialSource);
-    if (!report.ok) {
-      const first = report.errors[0];
-      throw new Error(
-        first === undefined
-          ? 'el ejemplo no ensambla'
-          : `línea ${String(first.line)}, columna ${String(first.column)}: ${first.message}`,
-      );
-    }
-    machine.run(RUN_BUDGET);
-    const snapshot = machine.snapshot();
-    const model = core.models.find((info) => info.id === snapshot.model)?.title ?? snapshot.model;
-    renderSummary(snapshot, model, element('#summary'));
-    renderRegisters(core, snapshot, element('#registers'));
+    let pending: number | undefined;
+    const editor = createEditor({
+      parent: element('#editor'),
+      listingParent: element('#listing'),
+      vocabulary: core.vocabulary,
+      source: factorialSource,
+      onChange: () => {
+        window.clearTimeout(pending);
+        pending = window.setTimeout(() => {
+          assembleAndShow(core, machine, editor.source(), (report) => {
+            editor.showReport(report);
+          });
+        }, ASSEMBLE_DELAY_MS);
+      },
+    });
+    assembleAndShow(core, machine, editor.source(), (report) => {
+      editor.showReport(report);
+    });
   } catch (error: unknown) {
     const reason = error instanceof Error ? error.message : String(error);
     status.textContent = 'no se pudo cargar el núcleo';
