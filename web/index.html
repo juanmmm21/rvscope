@@ -13,6 +13,25 @@
       <span class="brand">rvscope</span>
       <span class="label" id="core-status" role="status">cargando núcleo…</span>
     </header>
+    <nav class="controls" aria-label="Ejecución">
+      <div class="control-group">
+        <button type="button" id="assemble" aria-keyshortcuts="Control+S Meta+S">Ensamblar</button>
+        <button type="button" id="reset">Reiniciar</button>
+      </div>
+      <div class="control-group">
+        <button type="button" id="step-back" aria-keyshortcuts="Shift+F10">Paso atrás</button>
+        <button type="button" id="step" aria-keyshortcuts="F10">Paso</button>
+        <button type="button" id="run" class="primary" aria-keyshortcuts="Control+Enter Meta+Enter">
+          Ejecutar
+        </button>
+      </div>
+      <div class="control-group speed">
+        <label class="label" for="speed">Velocidad</label>
+        <input type="range" id="speed" min="0" step="1" />
+        <output id="speed-value" for="speed" class="speed-value"></output>
+      </div>
+      <p id="run-status" class="run-status" role="status" aria-live="polite"></p>
+    </nav>
     <main id="app">
       <section class="panel source" aria-labelledby="source-title">
         <div class="panel-head">
@@ -26,11 +45,28 @@
           <div id="listing" class="listing" aria-label="Desensamblado por línea"></div>
         </div>
         <p id="assembly-status" class="assembly-status" role="status" aria-live="polite"></p>
+        <p class="shortcuts label">
+          <kbd>F9</kbd> punto de parada · <kbd>F10</kbd> paso · <kbd>Mayús</kbd>+<kbd>F10</kbd> paso
+          atrás · <kbd>Ctrl</kbd>+<kbd>Intro</kbd> ejecutar o pausar · <kbd>Ctrl</kbd>+<kbd>S</kbd>
+          ensamblar
+        </p>
       </section>
-      <section class="panel" aria-labelledby="registers-title">
-        <h2 class="label" id="registers-title">Registros</h2>
-        <div id="registers" class="registers"></div>
-      </section>
+      <div class="side">
+        <section class="panel" aria-labelledby="registers-title">
+          <h2 class="label" id="registers-title">Registros</h2>
+          <div id="registers" class="registers"></div>
+        </section>
+        <section class="panel console" aria-labelledby="console-title">
+          <h2 class="label" id="console-title">Consola</h2>
+          <pre id="console-output" class="console-output" tabindex="0" aria-live="polite"></pre>
+          <form id="console-form" class="console-form">
+            <label class="label" for="console-input">Entrada</label>
+            <input id="console-input" type="text" autocomplete="off" spellcheck="false" />
+            <button type="submit">Enviar</button>
+            <button type="button" id="console-close">Fin de entrada</button>
+          </form>
+        </section>
+      </div>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>

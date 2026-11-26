@@ -274,3 +274,173 @@ main {
 .register[data-changed='true'] .register-value {
   color: var(--accent);
 }
+
+/* Controles de ejecución: botones de texto con línea fina; el pistacho solo marca lo que corre. */
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.5rem;
+  padding: 0.6rem 1.25rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.control-group {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+button {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--surface);
+}
+
+button:disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.6;
+}
+
+button:focus-visible,
+input:focus-visible,
+.console-output:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+button.primary[aria-pressed='true'] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.speed input[type='range'] {
+  width: 8rem;
+  accent-color: var(--muted);
+}
+
+.speed-value {
+  min-width: 9ch;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.run-status {
+  margin: 0 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.run-status[data-state='running'] {
+  color: var(--accent);
+}
+
+.run-status[data-state='error'] {
+  color: var(--danger);
+}
+
+.shortcuts {
+  margin: 0.4rem 0 0;
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+
+kbd {
+  padding: 0 0.3em;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+}
+
+/* Margen de puntos de parada y línea en curso. */
+.cm-breakpoint {
+  display: block;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--danger);
+}
+
+.cm-breakpoint-inert {
+  background: transparent;
+  border: 1px solid var(--muted);
+}
+
+.cm-exec-line {
+  box-shadow: inset 2px 0 0 var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.cm-exec-line[data-kind='halted'] {
+  box-shadow: inset 2px 0 0 var(--muted);
+  background: var(--surface);
+}
+
+.cm-exec-line[data-kind='fault'] {
+  box-shadow: inset 2px 0 0 var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.listing-row[data-kind='next'] .listing-address {
+  color: var(--accent);
+}
+
+.listing-row[data-kind='fault'] .listing-address {
+  color: var(--danger);
+}
+
+.side {
+  display: grid;
+  gap: 1.5rem;
+  align-content: start;
+}
+
+.console-output {
+  min-height: 4.5rem;
+  max-height: 12rem;
+  margin: 0;
+  padding: 0.5rem 0;
+  overflow: auto;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.console-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+
+.console-form input {
+  flex: 1 1 8rem;
+  min-width: 0;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+.console-form[data-awaiting='true'] input {
+  border-color: var(--accent);
+}

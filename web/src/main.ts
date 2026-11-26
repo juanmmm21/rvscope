@@ -1,18 +1,28 @@
 import './styles.css';
 import factorialSource from '../../examples/factorial.s?raw';
-import { loadCore, type AssembleReport, type Core, type Machine, type Snapshot } from './core';
-import { createEditor } from './editor/editor';
+import {
+  loadCore,
+  type AssembleReport,
+  type Core,
+  type Machine,
+  type RunStop,
+  type Snapshot,
+} from './core';
+import { createEditor, type SourceEditor } from './editor/editor';
+import { breakpointAddresses, executionLocation, sourceMap, type SourceMap } from './run/location';
+import { Runner, browserScheduler } from './run/runner';
+import { DEFAULT_SPEED_INDEX, SPEEDS, speedAt } from './run/speed';
 
-// Pantalla de trabajo: editor con el factorial de ejemplo, ensamblado al dejar de escribir y
-// registros del estado inicial. Los controles de ejecución llegan en la siguiente casilla.
+// Pantalla de trabajo: editor, controles de ejecución, registros y consola. Todo lo que pasa
+// en el procesador lo dice el núcleo; aquí solo se le piden operaciones y se pinta la foto.
 
 // Lo bastante corto para que parezca inmediato y lo bastante largo para no ensamblar con
 // cada tecla.
 const ASSEMBLE_DELAY_MS = 250;
 
-function element(selector: string): HTMLElement {
-  const found = document.querySelector<HTMLElement>(selector);
-  if (found === null) {
+function element<T extends HTMLElement>(selector: string, type: new () => T): T {
+  const found = document.querySelector(selector);
+  if (!(found instanceof type)) {
     throw new Error(`Falta el elemento ${selector} en index.html`);
   }
   return found;
@@ -24,6 +34,10 @@ function hex(value: number): string {
 
 function plural(count: number, one: string, many: string): string {
   return `${String(count)} ${count === 1 ? one : many}`;
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function renderRegisters(core: Core, snapshot: Snapshot, target: HTMLElement): void {
@@ -61,51 +75,398 @@ function renderAssembly(report: AssembleReport, target: HTMLElement): void {
       : `${plural(report.errors.length, 'error', 'errores')} · línea ${String(first.line)}, columna ${String(first.column)}: ${first.message}`;
 }
 
-function assembleAndShow(
-  core: Core,
-  machine: Machine,
-  source: string,
-  show: (report: AssembleReport) => void,
-): void {
-  const report = machine.assemble(source);
-  show(report);
-  renderAssembly(report, element('#assembly-status'));
-  if (report.ok) {
-    renderRegisters(core, machine.snapshot(), element('#registers'));
+// Frase de estado de la ejecución: dónde está y por qué se paró.
+function describeRun(snapshot: Snapshot, running: boolean, breakpointLine: number | null): string {
+  const { stats } = snapshot;
+  const counters = [
+    `ciclo ${String(stats.cycles)}`,
+    plural(stats.retired, 'instrucción', 'instrucciones'),
+    `CPI ${stats.cpi === null ? '—' : stats.cpi.toFixed(2)}`,
+  ].join(' · ');
+  const halt = snapshot.halt;
+  let state: string;
+  if (running) {
+    state = 'ejecutando';
+  } else if (halt !== null) {
+    const where = halt.line === null ? '' : ` (línea ${String(halt.line)})`;
+    state =
+      halt.kind === 'fault'
+        ? `fallo${where}: ${halt.message}`
+        : halt.kind === 'exited'
+          ? `terminado con código ${String(halt.code ?? 0)}`
+          : `parado por ebreak${where}`;
+  } else if (snapshot.status === 'awaiting_input') {
+    state = 'esperando entrada';
+  } else if (breakpointLine !== null) {
+    state = `punto de parada · línea ${String(breakpointLine)}`;
+  } else {
+    state = snapshot.stats.cycles === 0 ? 'listo' : 'en pausa';
+  }
+  return `${state} · ${counters}`;
+}
+
+interface Controls {
+  readonly assemble: HTMLButtonElement;
+  readonly reset: HTMLButtonElement;
+  readonly stepBack: HTMLButtonElement;
+  readonly step: HTMLButtonElement;
+  readonly run: HTMLButtonElement;
+  readonly speed: HTMLInputElement;
+  readonly speedValue: HTMLOutputElement;
+  readonly runStatus: HTMLElement;
+  readonly registers: HTMLElement;
+  readonly consoleOutput: HTMLElement;
+  readonly consoleForm: HTMLFormElement;
+  readonly consoleInput: HTMLInputElement;
+  readonly consoleClose: HTMLButtonElement;
+  readonly assemblyStatus: HTMLElement;
+}
+
+function findControls(): Controls {
+  return {
+    assemble: element('#assemble', HTMLButtonElement),
+    reset: element('#reset', HTMLButtonElement),
+    stepBack: element('#step-back', HTMLButtonElement),
+    step: element('#step', HTMLButtonElement),
+    run: element('#run', HTMLButtonElement),
+    speed: element('#speed', HTMLInputElement),
+    speedValue: element('#speed-value', HTMLOutputElement),
+    runStatus: element('#run-status', HTMLElement),
+    registers: element('#registers', HTMLElement),
+    consoleOutput: element('#console-output', HTMLElement),
+    consoleForm: element('#console-form', HTMLFormElement),
+    consoleInput: element('#console-input', HTMLInputElement),
+    consoleClose: element('#console-close', HTMLButtonElement),
+    assemblyStatus: element('#assembly-status', HTMLElement),
+  };
+}
+
+class Workbench {
+  readonly #core: Core;
+  readonly #machine: Machine;
+  readonly #ui: Controls;
+  readonly #editor: SourceEditor;
+  readonly #runner: Runner;
+  // Listado del último ensamblado correcto; `null` si hay errores o se editó después.
+  #map: SourceMap | null = null;
+  #pendingAssembly: number | undefined;
+  // Línea del punto de parada donde se detuvo la última ejecución, hasta el siguiente paso.
+  #breakpointLine: number | null = null;
+  // La ejecución se paró a pedir entrada: al darla, sigue sola.
+  #resumeAfterInput = false;
+  #lastOutput = '';
+
+  constructor(core: Core) {
+    this.#core = core;
+    this.#machine = core.createMachine();
+    this.#ui = findControls();
+    this.#ui.speed.max = String(SPEEDS.length - 1);
+    this.#ui.speed.value = String(DEFAULT_SPEED_INDEX);
+    this.#runner = new Runner(
+      this.#machine,
+      speedAt(DEFAULT_SPEED_INDEX),
+      {
+        onProgress: () => {
+          this.#render();
+        },
+        onStop: (stop) => {
+          this.#stopped(stop);
+        },
+        onError: (error) => {
+          this.#fail(error);
+        },
+      },
+      browserScheduler,
+    );
+    this.#editor = createEditor({
+      parent: element('#editor', HTMLElement),
+      listingParent: element('#listing', HTMLElement),
+      vocabulary: core.vocabulary,
+      source: factorialSource,
+      onChange: () => {
+        this.#sourceChanged();
+      },
+      onBreakpointsChange: () => {
+        this.#syncBreakpoints();
+      },
+    });
+    this.#bind();
+    this.#showSpeed();
+    this.#assemble();
+  }
+
+  #bind(): void {
+    const ui = this.#ui;
+    ui.assemble.addEventListener('click', () => {
+      this.#assemble();
+    });
+    ui.reset.addEventListener('click', () => {
+      this.#act(() => {
+        this.#machine.reset();
+      });
+    });
+    ui.stepBack.addEventListener('click', () => {
+      this.#stepBack();
+    });
+    ui.step.addEventListener('click', () => {
+      this.#step();
+    });
+    ui.run.addEventListener('click', () => {
+      this.#toggleRun();
+    });
+    ui.speed.addEventListener('input', () => {
+      this.#showSpeed();
+    });
+    ui.consoleForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const text = ui.consoleInput.value;
+      ui.consoleInput.value = '';
+      this.#giveInput(() => {
+        this.#machine.pushInput(`${text}\n`);
+      });
+    });
+    ui.consoleClose.addEventListener('click', () => {
+      this.#giveInput(() => {
+        this.#machine.closeInput();
+      });
+    });
+    // En captura: los atajos funcionan también con el foco dentro del editor.
+    window.addEventListener(
+      'keydown',
+      (event) => {
+        this.#shortcut(event);
+      },
+      { capture: true },
+    );
+  }
+
+  #shortcut(event: KeyboardEvent): void {
+    const mod = event.ctrlKey || event.metaKey;
+    let action: (() => void) | null = null;
+    if (event.key === 'F9' && !mod && !event.altKey) {
+      action = () => {
+        this.#editor.toggleBreakpointAtCursor();
+      };
+    } else if (event.key === 'F10' && !mod && !event.altKey) {
+      action = event.shiftKey
+        ? () => {
+            this.#stepBack();
+          }
+        : () => {
+            this.#step();
+          };
+    } else if (event.key === 'Enter' && mod && !event.shiftKey && !event.altKey) {
+      action = () => {
+        this.#toggleRun();
+      };
+    } else if (event.key.toLowerCase() === 's' && mod && !event.shiftKey && !event.altKey) {
+      action = () => {
+        this.#assemble();
+      };
+    }
+    if (action !== null) {
+      event.preventDefault();
+      event.stopPropagation();
+      action();
+    }
+  }
+
+  #showSpeed(): void {
+    const speed = speedAt(Number(this.#ui.speed.value));
+    this.#ui.speedValue.textContent = speed.label;
+    this.#ui.speed.setAttribute('aria-valuetext', speed.label);
+    this.#runner.setSpeed(speed);
+  }
+
+  #sourceChanged(): void {
+    // El programa en marcha ya no es el del editor.
+    this.#runner.stop();
+    this.#resumeAfterInput = false;
+    this.#map = null;
+    this.#render();
+    window.clearTimeout(this.#pendingAssembly);
+    this.#pendingAssembly = window.setTimeout(() => {
+      this.#assemble();
+    }, ASSEMBLE_DELAY_MS);
+  }
+
+  #assemble(): void {
+    window.clearTimeout(this.#pendingAssembly);
+    this.#runner.stop();
+    this.#resumeAfterInput = false;
+    this.#breakpointLine = null;
+    this.#lastOutput = '';
+    try {
+      const report = this.#machine.assemble(this.#editor.source());
+      this.#editor.showReport(report);
+      renderAssembly(report, this.#ui.assemblyStatus);
+      this.#map = report.ok ? sourceMap(report.listing) : null;
+      this.#syncBreakpoints();
+    } catch (error: unknown) {
+      this.#map = null;
+      this.#fail(error);
+    }
+    this.#render();
+  }
+
+  #syncBreakpoints(): void {
+    if (this.#map === null) {
+      return;
+    }
+    this.#machine.setBreakpoints(breakpointAddresses(this.#editor.breakpointLines(), this.#map));
+  }
+
+  #step(): void {
+    this.#act(() => {
+      if (this.#machine.step() === 'awaiting_input') {
+        this.#ui.consoleInput.focus();
+      }
+    });
+  }
+
+  #stepBack(): void {
+    this.#act(() => {
+      this.#machine.stepBack();
+    });
+  }
+
+  #toggleRun(): void {
+    if (this.#runner.running) {
+      this.#runner.stop();
+      this.#resumeAfterInput = false;
+      this.#render();
+      return;
+    }
+    if (!this.#ready()) {
+      return;
+    }
+    const snapshot = this.#machine.snapshot();
+    if (snapshot.status === 'halted') {
+      return;
+    }
+    if (snapshot.status === 'awaiting_input') {
+      this.#resumeAfterInput = true;
+      this.#ui.consoleInput.focus();
+      this.#render();
+      return;
+    }
+    this.#breakpointLine = null;
+    this.#runner.start();
+    this.#render();
+  }
+
+  #stopped(stop: Exclude<RunStop, { reason: 'budget' }>): void {
+    if (stop.reason === 'breakpoint') {
+      this.#breakpointLine = this.#map?.lineOfAddress.get(stop.pc) ?? null;
+    } else if (stop.reason === 'awaiting_input') {
+      this.#resumeAfterInput = true;
+      this.#ui.consoleInput.focus();
+    }
+    this.#render();
+  }
+
+  #giveInput(give: () => void): void {
+    if (!this.#ready()) {
+      return;
+    }
+    // `#act` olvida la reanudación pendiente: se guarda antes.
+    const resume = this.#resumeAfterInput;
+    this.#act(give);
+    if (resume && this.#machine.snapshot().status === 'ready') {
+      this.#runner.start();
+      this.#render();
+    }
+  }
+
+  // Un paso suelto: para la ejecución continua, hace la operación y repinta.
+  #act(operation: () => void): void {
+    if (!this.#ready()) {
+      return;
+    }
+    this.#runner.stop();
+    this.#resumeAfterInput = false;
+    this.#breakpointLine = null;
+    try {
+      operation();
+    } catch (error: unknown) {
+      this.#fail(error);
+      return;
+    }
+    this.#render();
+  }
+
+  #ready(): boolean {
+    return this.#map !== null;
+  }
+
+  #fail(error: unknown): void {
+    this.#runner.stop();
+    this.#ui.runStatus.dataset.state = 'error';
+    this.#ui.runStatus.textContent = `error del simulador: ${describeError(error)}`;
+    console.error('rvscope:', error);
+  }
+
+  #render(): void {
+    const ui = this.#ui;
+    const ready = this.#ready();
+    const running = this.#runner.running;
+    ui.run.textContent = running ? 'Pausa' : 'Ejecutar';
+    ui.run.setAttribute('aria-pressed', String(running));
+    if (!ready) {
+      for (const button of [ui.reset, ui.stepBack, ui.step, ui.run]) {
+        button.disabled = true;
+      }
+      ui.consoleInput.disabled = true;
+      ui.consoleClose.disabled = true;
+      ui.runStatus.dataset.state = 'idle';
+      ui.runStatus.textContent = 'sin programa ensamblado';
+      this.#editor.showLocation(null);
+      return;
+    }
+    let snapshot: Snapshot;
+    try {
+      snapshot = this.#machine.snapshot();
+    } catch (error: unknown) {
+      this.#fail(error);
+      return;
+    }
+    const halted = snapshot.status === 'halted';
+    ui.reset.disabled = false;
+    ui.stepBack.disabled = !snapshot.can_step_back;
+    ui.step.disabled = halted;
+    ui.run.disabled = halted && !running;
+    const acceptsInput = !halted && !snapshot.input_closed;
+    ui.consoleInput.disabled = !acceptsInput;
+    ui.consoleClose.disabled = !acceptsInput;
+    ui.consoleForm.dataset.awaiting = String(snapshot.status === 'awaiting_input');
+
+    ui.runStatus.dataset.state =
+      snapshot.halt?.kind === 'fault' ? 'error' : running ? 'running' : 'idle';
+    ui.runStatus.textContent = describeRun(snapshot, running, this.#breakpointLine);
+
+    renderRegisters(this.#core, snapshot, ui.registers);
+    if (snapshot.output !== this.#lastOutput) {
+      ui.consoleOutput.textContent = snapshot.output;
+      ui.consoleOutput.scrollTop = ui.consoleOutput.scrollHeight;
+      this.#lastOutput = snapshot.output;
+    }
+    if (this.#map !== null) {
+      this.#editor.showLocation(executionLocation(snapshot, this.#map));
+    }
   }
 }
 
 async function boot(): Promise<void> {
-  const status = element('#core-status');
+  const status = element('#core-status', HTMLElement);
   try {
     const core = await loadCore();
     status.textContent = `núcleo ${core.version}`;
     status.dataset.state = 'ready';
-
-    const machine = core.createMachine();
-    let pending: number | undefined;
-    const editor = createEditor({
-      parent: element('#editor'),
-      listingParent: element('#listing'),
-      vocabulary: core.vocabulary,
-      source: factorialSource,
-      onChange: () => {
-        window.clearTimeout(pending);
-        pending = window.setTimeout(() => {
-          assembleAndShow(core, machine, editor.source(), (report) => {
-            editor.showReport(report);
-          });
-        }, ASSEMBLE_DELAY_MS);
-      },
-    });
-    assembleAndShow(core, machine, editor.source(), (report) => {
-      editor.showReport(report);
-    });
+    new Workbench(core);
   } catch (error: unknown) {
-    const reason = error instanceof Error ? error.message : String(error);
     status.textContent = 'no se pudo cargar el núcleo';
     status.dataset.state = 'error';
-    console.error('rvscope:', reason);
+    console.error('rvscope:', describeError(error));
   }
 }
 
