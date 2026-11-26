@@ -153,8 +153,18 @@ impl<'a> Builder<'a> {
         match spec.operands {
             Operands::RdRs1Rs2 => {
                 let ops = self.arity(3)?;
-                let (rd, rs1, rs2) = (reg(&ops[0])?, reg(&ops[1])?, reg(&ops[2])?);
-                self.emit(mnemonic, rd, rs1, rs2, 0, self.statement.span());
+                let (rd, rs1) = (reg(&ops[0])?, reg(&ops[1])?);
+                // Como gas, `add a0, a1, 5` es `addi`: el mnemónico con inmediato existe y no
+                // hay forma de confundirlo con otra cosa.
+                if let (OperandKind::Expr(value), Some(immediate)) =
+                    (&ops[2].kind, immediate_form(mnemonic))
+                {
+                    let imm = to_i32(self.context.value(value)?, ops[2].span)?;
+                    self.emit(immediate, rd, rs1, Reg::ZERO, imm, ops[2].span);
+                } else {
+                    let rs2 = reg(&ops[2])?;
+                    self.emit(mnemonic, rd, rs1, rs2, 0, self.statement.span());
+                }
             }
             Operands::RdRs1Imm | Operands::RdRs1Shamt => {
                 let ops = self.arity(3)?;
@@ -339,7 +349,7 @@ impl<'a> Builder<'a> {
                     }
                 }
             }
-            "la" => {
+            "la" | "lla" => {
                 let ops = self.arity(2)?;
                 let rd = reg(&ops[0])?;
                 self.pc_relative(&ops[1], rd, M::Addi, rd, Reg::ZERO)?;
@@ -393,8 +403,17 @@ impl<'a> Builder<'a> {
                 self.emit(M::Jal, Reg::ZERO, Reg::ZERO, Reg::ZERO, offset, ops[0].span);
             }
             "jr" => {
-                let ops = self.arity(1)?;
-                self.emit(M::Jalr, Reg::ZERO, reg(&ops[0])?, Reg::ZERO, 0, ops[0].span);
+                let ops = self.statement.operands.as_slice();
+                let (rs, imm, span) = match ops {
+                    [rs] => (reg(rs)?, 0, rs.span),
+                    [rs, offset] => (
+                        reg(rs)?,
+                        to_i32(self.context.value(expr(offset)?)?, offset.span)?,
+                        offset.span,
+                    ),
+                    _ => return Err(self.wrong_form()),
+                };
+                self.emit(M::Jalr, Reg::ZERO, rs, Reg::ZERO, imm, span);
             }
             "call" | "tail" => {
                 let ops = self.arity(1)?;
@@ -417,6 +436,23 @@ impl<'a> Builder<'a> {
         }
         Ok(())
     }
+}
+
+/// Versión con inmediato de una instrucción de registro a registro, si la hay.
+fn immediate_form(mnemonic: Mnemonic) -> Option<Mnemonic> {
+    use Mnemonic as M;
+    Some(match mnemonic {
+        M::Add => M::Addi,
+        M::Slt => M::Slti,
+        M::Sltu => M::Sltiu,
+        M::Xor => M::Xori,
+        M::Or => M::Ori,
+        M::And => M::Andi,
+        M::Sll => M::Slli,
+        M::Srl => M::Srli,
+        M::Sra => M::Srai,
+        _ => return None,
+    })
 }
 
 /// Algunas instrucciones reales tienen además una forma de pseudoinstrucción con el mismo

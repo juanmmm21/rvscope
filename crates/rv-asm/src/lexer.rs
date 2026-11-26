@@ -7,6 +7,13 @@ pub enum TokenKind {
     /// Nombre: mnemónico, directiva, registro o símbolo.
     Ident(String),
     Int(i64),
+    /// Definición de etiqueta local numérica: `1:` (los dos puntos van incluidos).
+    LocalDef(u32),
+    /// Referencia a una etiqueta local: `1f` (la siguiente) o `1b` (la anterior).
+    LocalRef {
+        number: u32,
+        forward: bool,
+    },
     Str(String),
     /// Modificador de reubicación como `%hi` o `%lo` (sin el `%`).
     Modifier(String),
@@ -16,6 +23,16 @@ pub enum TokenKind {
     Colon,
     Plus,
     Minus,
+    Star,
+    Slash,
+    Amp,
+    Pipe,
+    Caret,
+    Tilde,
+    Shl,
+    Shr,
+    /// Separa varias sentencias en una misma línea.
+    Semicolon,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,7 +88,7 @@ pub fn tokenize(line: &str) -> LineResult<Vec<Token>> {
                 cursor.position += 1;
                 continue;
             }
-            ',' | '(' | ')' | ':' | '+' | '-' => {
+            ',' | '(' | ')' | ':' | '+' | '-' | '*' | '/' | '&' | '|' | '^' | '~' | ';' => {
                 cursor.position += 1;
                 match c {
                     ',' => TokenKind::Comma,
@@ -79,7 +96,28 @@ pub fn tokenize(line: &str) -> LineResult<Vec<Token>> {
                     ')' => TokenKind::RParen,
                     ':' => TokenKind::Colon,
                     '+' => TokenKind::Plus,
-                    _ => TokenKind::Minus,
+                    '-' => TokenKind::Minus,
+                    '*' => TokenKind::Star,
+                    '/' => TokenKind::Slash,
+                    '&' => TokenKind::Amp,
+                    '|' => TokenKind::Pipe,
+                    '^' => TokenKind::Caret,
+                    '~' => TokenKind::Tilde,
+                    _ => TokenKind::Semicolon,
+                }
+            }
+            '<' | '>' => {
+                if cursor.peek_at(1) != Some(c) {
+                    return Err(LineError::new(
+                        Span::new(start, 1),
+                        format!("carácter inesperado «{c}» (los desplazamientos son «<<» y «>>»)"),
+                    ));
+                }
+                cursor.position += 2;
+                if c == '<' {
+                    TokenKind::Shl
+                } else {
+                    TokenKind::Shr
                 }
             }
             '%' => {
@@ -95,7 +133,7 @@ pub fn tokenize(line: &str) -> LineResult<Vec<Token>> {
             }
             '"' => TokenKind::Str(lex_string(&mut cursor)?),
             '\'' => TokenKind::Int(lex_char(&mut cursor)?),
-            c if c.is_ascii_digit() => TokenKind::Int(lex_number(&mut cursor)?),
+            c if c.is_ascii_digit() => lex_number(&mut cursor)?,
             c if is_ident_start(c) => TokenKind::Ident(cursor.take_while(is_ident_char)),
             other => {
                 return Err(LineError::new(
@@ -112,10 +150,33 @@ pub fn tokenize(line: &str) -> LineResult<Vec<Token>> {
     Ok(tokens)
 }
 
-fn lex_number(cursor: &mut Cursor<'_>) -> LineResult<i64> {
+/// Número, o etiqueta local si son cifras decimales seguidas de `:`, `f` o `b` (como en gas:
+/// `0b` a secas es la etiqueta local 0 hacia atrás, no un binario vacío).
+fn lex_number(cursor: &mut Cursor<'_>) -> LineResult<TokenKind> {
     let start = cursor.position;
     let text = cursor.take_while(|c| c.is_ascii_alphanumeric() || c == '_');
     let span = Span::new(start, text.len());
+    let local = |digits: &str| {
+        digits.parse::<u32>().map_err(|_| {
+            LineError::new(
+                span,
+                format!("número de etiqueta local demasiado grande «{text}»"),
+            )
+        })
+    };
+    if text.bytes().all(|b| b.is_ascii_digit()) && cursor.peek() == Some(':') {
+        cursor.position += 1;
+        return Ok(TokenKind::LocalDef(local(&text)?));
+    }
+    if let Some(digits) = text.strip_suffix(['f', 'b'])
+        && !digits.is_empty()
+        && digits.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Ok(TokenKind::LocalRef {
+            number: local(digits)?,
+            forward: text.ends_with('f'),
+        });
+    }
     let lower = text.to_ascii_lowercase();
     let (digits, radix) = if let Some(rest) = lower.strip_prefix("0x") {
         (rest, 16)
@@ -130,13 +191,16 @@ fn lex_number(cursor: &mut Cursor<'_>) -> LineResult<i64> {
     if digits.is_empty() {
         return Err(LineError::new(span, format!("número incompleto «{text}»")));
     }
-    let value = u64::from_str_radix(&digits, radix)
-        .map_err(|_| LineError::new(span, format!("número no válido «{text}»")))?;
-    // Lo más grande que cabe en cualquier directiva o inmediato es una palabra sin signo.
-    if value > u64::from(u32::MAX) {
-        return Err(LineError::new(span, format!("«{text}» no cabe en 32 bits")));
-    }
-    i64::try_from(value).map_err(|_| LineError::new(span, format!("«{text}» no cabe en 32 bits")))
+    let value = u64::from_str_radix(&digits, radix).map_err(|_| {
+        LineError::new(
+            span,
+            format!("número no válido o de más de 64 bits «{text}»"),
+        )
+    })?;
+    // Las expresiones se calculan en 64 bits con complemento a dos, como en gas: así
+    // `0xffffffff80000000 & 0xffffffff` funciona. Si el resultado no cabe en 32 bits lo dice
+    // la instrucción o directiva que lo usa.
+    Ok(TokenKind::Int(value as i64))
 }
 
 fn lex_escape(cursor: &mut Cursor<'_>, start: usize) -> LineResult<char> {
@@ -282,6 +346,10 @@ mod tests {
             ]
         );
         assert_eq!(kinds("0xFFFFFFFF"), vec![TokenKind::Int(0xffff_ffff)]);
+        assert_eq!(
+            kinds("0xffffffff80000000"),
+            vec![TokenKind::Int(-0x8000_0000)]
+        );
     }
 
     #[test]
@@ -298,8 +366,9 @@ mod tests {
 
     #[test]
     fn reports_errors_with_position() {
-        let error = tokenize("li a0, 0x1_0000_0000").unwrap_err();
+        let error = tokenize("li a0, 0x1_0000_0000_0000_0000").unwrap_err();
         assert_eq!(error.span.start, 7);
+        assert_eq!(tokenize("a < b").unwrap_err().span, Span::new(2, 1));
         let error = tokenize("  .string \"abc").unwrap_err();
         assert_eq!(error.span.start, 10);
         assert_eq!(
@@ -308,5 +377,64 @@ mod tests {
         );
         assert!(tokenize("0x").is_err());
         assert!(tokenize("12ab").is_err());
+        assert!(tokenize("1fb").is_err());
+    }
+
+    #[test]
+    fn local_labels_operators_and_separators() {
+        assert_eq!(
+            kinds("1: bne a0, a1, 1b; j 12f"),
+            vec![
+                TokenKind::LocalDef(1),
+                TokenKind::Ident("bne".into()),
+                TokenKind::Ident("a0".into()),
+                TokenKind::Comma,
+                TokenKind::Ident("a1".into()),
+                TokenKind::Comma,
+                TokenKind::LocalRef {
+                    number: 1,
+                    forward: false
+                },
+                TokenKind::Semicolon,
+                TokenKind::Ident("j".into()),
+                TokenKind::LocalRef {
+                    number: 12,
+                    forward: true
+                },
+            ]
+        );
+        assert_eq!(
+            kinds("~1 << 2 >> 3 & 4 | 5 ^ 6 * 7 / 8"),
+            vec![
+                TokenKind::Tilde,
+                TokenKind::Int(1),
+                TokenKind::Shl,
+                TokenKind::Int(2),
+                TokenKind::Shr,
+                TokenKind::Int(3),
+                TokenKind::Amp,
+                TokenKind::Int(4),
+                TokenKind::Pipe,
+                TokenKind::Int(5),
+                TokenKind::Caret,
+                TokenKind::Int(6),
+                TokenKind::Star,
+                TokenKind::Int(7),
+                TokenKind::Slash,
+                TokenKind::Int(8),
+            ]
+        );
+        // «0b» sin cifras es la etiqueta local 0 hacia atrás; «0x1f» sigue siendo un número.
+        assert_eq!(
+            kinds("0b 0x1f"),
+            vec![
+                TokenKind::LocalRef {
+                    number: 0,
+                    forward: false
+                },
+                TokenKind::Int(0x1f)
+            ]
+        );
+        assert_eq!(kinds(r#".string "a;b""#)[1], TokenKind::Str("a;b".into()));
     }
 }

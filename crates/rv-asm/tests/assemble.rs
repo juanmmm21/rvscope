@@ -289,3 +289,101 @@ fn never_panics_on_garbage() {
         seed = seed.wrapping_add(0x9e37_79b9);
     }
 }
+
+#[test]
+fn local_labels_resolve_by_source_order() {
+    let program = ok("
+        1:  addi a0, a0, 1
+            j 1f
+        1:  addi a0, a0, 2
+            beq a0, a1, 1b
+        1:  j 1b
+    ");
+    assert_eq!(
+        disassembly(&program),
+        [
+            "addi a0, a0, 1",
+            "jal zero, 0x8",
+            "addi a0, a0, 2",
+            "beq a0, a1, 0x8",
+            "jal zero, 0x10",
+        ]
+    );
+    // Las etiquetas locales no aparecen entre las del programa.
+    assert!(program.labels.is_empty());
+
+    let wrong = errors("j 2b\nj 3f\n2:");
+    assert_eq!(wrong.len(), 2);
+    assert_eq!((wrong[0].line, wrong[0].column), (1, 3));
+    assert!(wrong[0].message.contains("antes de esta línea"));
+    assert_eq!(wrong[1].line, 2);
+    assert!(wrong[1].message.contains("después de esta línea"));
+}
+
+#[test]
+fn semicolons_expressions_and_options() {
+    let program = ok("
+        .option nopic
+        .equ N, 3
+        li t0, (1 << N) | 1; li t1, ((0xffffffff80000000) & ((1 << 31 << 1) - 1)); nop
+        x: li t2, ~0 ^ 0xff;; lla a0, x
+        .data
+        .word N * 4 - 2 / 2, -(1 << 31)
+    ");
+    assert_eq!(
+        disassembly(&program)[..4],
+        [
+            "addi t0, zero, 9",
+            "lui t1, 0x80000",
+            "addi zero, zero, 0",
+            "addi t2, zero, -256"
+        ]
+    );
+    assert_eq!(program.labels["x"], 0xc);
+    assert_eq!(program.data.bytes, [11, 0, 0, 0, 0, 0, 0, 0x80]);
+    assert_eq!(
+        errors("li a0, 0x100000000")[0].message,
+        "4294967296 no cabe en 32 bits"
+    );
+    assert_eq!(errors(".option rvv")[0].column, 9);
+    assert!(
+        errors("li a0, 1 / 0")[0]
+            .message
+            .contains("división por cero")
+    );
+    // Un error en una sentencia no impide revisar las demás de la misma línea.
+    assert_eq!(errors("addi a0; add a1, a2, a3; foo").len(), 2);
+}
+
+#[test]
+fn forward_branches_work_with_a_far_text_base() {
+    let layout = rv_asm::Layout {
+        text_base: 0x8000_0000,
+        data_base: 0x1000_0000,
+    };
+    // En la primera pasada `end` aún no existe; no por eso el salto se sale de rango.
+    let program = match rv_asm::assemble_with(
+        "beq a0, a1, end
+nop
+end: ret",
+        layout,
+    ) {
+        Ok(program) => program,
+        Err(errors) => panic!("errores inesperados: {errors:#?}"),
+    };
+    assert_eq!(disassembly(&program)[0], "beq a0, a1, 0x80000008");
+}
+
+#[test]
+fn alignment_gaps_in_text_are_nops() {
+    let program = ok("nop\n.align 3\nend: sra a0, a0, 3\nadd a0, a0, -1\njr t0, -4");
+    assert_eq!(
+        program.text.bytes[4..8],
+        0x0000_0013u32.to_le_bytes(),
+        "el hueco de .align se ejecuta como nop"
+    );
+    assert_eq!(
+        disassembly(&program)[1..],
+        ["srai a0, a0, 3", "addi a0, a0, -1", "jalr zero, -4(t0)"]
+    );
+}

@@ -6,9 +6,9 @@ use std::collections::{BTreeMap, HashMap};
 use rv_isa::Reg;
 
 use crate::error::{AsmError, LineError, LineResult, Span};
-use crate::eval::{Context, Pass, SymbolDef, SymbolValue};
+use crate::eval::{Context, Pass, SymbolDef, SymbolValue, is_local_key, local_key};
 use crate::expand::expand;
-use crate::parser::{Expr, Label, Operand, OperandKind, Statement, parse_line};
+use crate::parser::{Expr, LabelName, Operand, OperandKind, Statement, parse_line};
 use crate::program::{Layout, ListingEntry, Program, Segment};
 
 /// Tope por segmento, para que un `.space` desmesurado no agote la memoria del navegador.
@@ -81,8 +81,11 @@ struct Assembler {
     /// Desplazamiento actual dentro de cada segmento.
     text_size: u64,
     data_size: u64,
-    /// Etiquetas que esperan a la siguiente sentencia que ocupe memoria.
-    pending: Vec<(Label, usize)>,
+    /// Etiquetas (nombre en la tabla, tramo y línea) que esperan a la siguiente sentencia que
+    /// ocupe memoria.
+    pending: Vec<(String, Span, usize)>,
+    /// Cuántas veces se ha definido ya cada etiqueta local numérica.
+    local_counts: HashMap<u32, usize>,
 }
 
 fn align_up(value: u64, alignment: u64) -> u64 {
@@ -114,6 +117,7 @@ impl Assembler {
             text_size: 0,
             data_size: 0,
             pending: Vec::new(),
+            local_counts: HashMap::new(),
         }
     }
 
@@ -163,8 +167,8 @@ impl Assembler {
 
     fn bind_pending(&mut self) {
         let address = self.current_address();
-        for (label, line) in std::mem::take(&mut self.pending) {
-            self.define(&label.name, label.span, line, SymbolValue::Label(address));
+        for (name, span, line) in std::mem::take(&mut self.pending) {
+            self.define(&name, span, line, SymbolValue::Label(address));
         }
     }
 
@@ -188,23 +192,75 @@ impl Assembler {
         Context {
             symbols: &self.symbols,
             pass,
+            here: self.current_address(),
         }
     }
 
     // --- Primera pasada ---
 
-    fn layout_line(&mut self, line: usize, text: &str) -> LineResult<()> {
-        let parsed = parse_line(text)?;
-        self.pending
-            .extend(parsed.labels.into_iter().map(|label| (label, line)));
-        let Some(statement) = parsed.statement else {
-            return Ok(());
+    fn layout_line(&mut self, line: usize, text: &str) {
+        let parsed = match parse_line(text) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                self.errors.push(error.on_line(line));
+                return;
+            }
         };
-        if statement.is_directive() {
-            self.layout_directive(line, statement)
-        } else {
-            self.layout_instruction(line, statement)
+        for part in parsed {
+            for label in part.labels {
+                let name = match label.name {
+                    LabelName::Named(name) => name,
+                    LabelName::Local(number) => {
+                        let count = self.local_counts.entry(number).or_default();
+                        *count += 1;
+                        local_key(number, *count)
+                    }
+                };
+                self.pending.push((name, label.span, line));
+            }
+            let Some(mut statement) = part.statement else {
+                continue;
+            };
+            let result = match self.resolve_locals(&mut statement) {
+                Ok(()) if statement.is_directive() => self.layout_directive(line, statement),
+                Ok(()) => self.layout_instruction(line, statement),
+                Err(error) => {
+                    if !statement.is_directive() {
+                        // Igual que con cualquier instrucción errónea: ocupa su sitio.
+                        self.reserve(4, 4, line, statement.span());
+                    }
+                    Err(error)
+                }
+            };
+            if let Err(error) = result {
+                self.errors.push(error.on_line(line));
+            }
         }
+    }
+
+    /// Fija a qué definición apunta cada `Nb`/`Nf` según lo visto hasta aquí del fuente.
+    fn resolve_locals(&self, statement: &mut Statement) -> LineResult<()> {
+        let mut error = None;
+        statement.locals_mut(&mut |local| {
+            let defined = self.local_counts.get(&local.number).copied().unwrap_or(0);
+            if local.forward {
+                local.ordinal = defined + 1;
+            } else if defined == 0 {
+                error.get_or_insert_with(|| {
+                    LineError::new(
+                        local.span,
+                        format!(
+                            "«{}»: no hay ninguna etiqueta «{}:» antes de esta línea",
+                            local.text(),
+                            local.number
+                        ),
+                    )
+                });
+            } else {
+                local.ordinal = defined;
+            }
+        });
+        error.map_or(Ok(()), Err)
     }
 
     fn layout_instruction(&mut self, line: usize, statement: Statement) -> LineResult<()> {
@@ -263,6 +319,23 @@ impl Assembler {
                             format!("sección desconocida «{section_name}»"),
                         ));
                     }
+                }
+            }
+            ".option" => {
+                // Lo emiten los compiladores (`.option nopic`); en rvscope no cambia nada
+                // porque no hay instrucciones comprimidas ni código reubicable.
+                let [option] = operands.as_slice() else {
+                    return Err(arity_error(".option nombre"));
+                };
+                let option_name = symbol_name(option)?;
+                if !matches!(
+                    option_name,
+                    "push" | "pop" | "rvc" | "norvc" | "pic" | "nopic" | "relax" | "norelax"
+                ) {
+                    return Err(LineError::new(
+                        option.span,
+                        format!("opción desconocida «{option_name}»"),
+                    ));
                 }
             }
             ".globl" | ".global" => {
@@ -469,6 +542,15 @@ impl Segments {
     }
 }
 
+/// Relleno del segmento de texto: los huecos que deja `.align` entre instrucciones se
+/// ejecutan, así que van con `nop` (como en gas) y no con ceros, que son una instrucción ilegal.
+fn nop_fill(base: u32, size: u64) -> Vec<u8> {
+    const NOP: [u8; 4] = 0x0000_0013u32.to_le_bytes();
+    (0..size)
+        .map(|offset| NOP[((u64::from(base) + offset) % 4) as usize])
+        .collect()
+}
+
 /// Ensambla con las direcciones por defecto.
 pub fn assemble(source: &str) -> Result<Program, Vec<AsmError>> {
     assemble_with(source, Layout::default())
@@ -479,9 +561,7 @@ pub fn assemble_with(source: &str, layout: Layout) -> Result<Program, Vec<AsmErr
     let mut assembler = Assembler::new(layout);
     for (index, text) in source.lines().enumerate() {
         let line = index + 1;
-        if let Err(error) = assembler.layout_line(line, text) {
-            assembler.errors.push(error.on_line(line));
-        }
+        assembler.layout_line(line, text);
     }
     assembler.bind_pending();
 
@@ -500,7 +580,7 @@ pub fn assemble_with(source: &str, layout: Layout) -> Result<Program, Vec<AsmErr
     let mut segments = Segments {
         text: Segment {
             base: layout.text_base,
-            bytes: vec![0; usize::try_from(assembler.text_size).unwrap_or(0)],
+            bytes: nop_fill(layout.text_base, assembler.text_size),
         },
         data: Segment {
             base: layout.data_base,
@@ -523,6 +603,7 @@ pub fn assemble_with(source: &str, layout: Layout) -> Result<Program, Vec<AsmErr
     let labels: BTreeMap<String, u32> = assembler
         .symbols
         .iter()
+        .filter(|(name, _)| !is_local_key(name))
         .filter_map(|(name, def)| match def.value {
             SymbolValue::Label(address) => Some((name.clone(), address)),
             SymbolValue::Constant(_) => None,

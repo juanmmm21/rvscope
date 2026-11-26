@@ -33,12 +33,14 @@ const fn pseudo(
 }
 
 #[rustfmt::skip]
-pub static PSEUDO_INSTRUCTIONS: [PseudoSpec; 35] = [
+pub static PSEUDO_INSTRUCTIONS: [PseudoSpec; 36] = [
     pseudo("nop", "nop", "addi x0, x0, 0", "No hace nada", "nop"),
     pseudo("li", "li rd, imm", "addi rd, x0, imm  ·  o bien  ·  lui rd, %hi(imm); addi rd, rd, %lo(imm)",
         "Carga una constante de 32 bits", "li a0, 100000"),
     pseudo("la", "la rd, symbol", "auipc rd, %pcrel_hi(symbol); addi rd, rd, %pcrel_lo(symbol)",
         "Carga la dirección de una etiqueta", "la a0, label"),
+    pseudo("lla", "lla rd, symbol", "auipc rd, %pcrel_hi(symbol); addi rd, rd, %pcrel_lo(symbol)",
+        "Igual que la: dirección relativa al pc", "lla a0, label"),
     pseudo("mv", "mv rd, rs", "addi rd, rs, 0", "Copia un registro", "mv a0, a1"),
     pseudo("not", "not rd, rs", "xori rd, rs, -1", "Complemento a uno", "not a0, a1"),
     pseudo("neg", "neg rd, rs", "sub rd, x0, rs", "Cambia el signo", "neg a0, a1"),
@@ -58,7 +60,7 @@ pub static PSEUDO_INSTRUCTIONS: [PseudoSpec; 35] = [
     pseudo("bleu", "bleu rs, rt, label", "bgeu rt, rs, label", "Salta si rs <= rt sin signo", "bleu a0, a1, label"),
     pseudo("j", "j label", "jal x0, label", "Salta sin guardar la vuelta", "j label"),
     pseudo("jal", "jal label", "jal ra, label", "Llama a una función cercana", "jal label"),
-    pseudo("jr", "jr rs", "jalr x0, 0(rs)", "Salta a la dirección de rs", "jr t0"),
+    pseudo("jr", "jr rs[, imm]", "jalr x0, imm(rs)", "Salta a la dirección de rs (más imm)", "jr t0, 4"),
     pseudo("jalr", "jalr rs", "jalr ra, 0(rs)", "Llama a la función cuya dirección está en rs", "jalr t0"),
     pseudo("ret", "ret", "jalr x0, 0(ra)", "Vuelve de una función", "ret"),
     pseudo("call", "call label", "auipc ra, %pcrel_hi(label); jalr ra, %pcrel_lo(label)(ra)",

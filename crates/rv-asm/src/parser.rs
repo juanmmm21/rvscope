@@ -13,14 +13,91 @@ pub enum Modifier {
     Lo,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Shl,
+    Shr,
+    And,
+    Or,
+    Xor,
+}
+
+impl BinaryOp {
+    /// Precedencia como en C, de menos a más: `|`, `^`, `&`, desplazamientos, suma y producto.
+    fn precedence(self) -> u8 {
+        match self {
+            BinaryOp::Or => 1,
+            BinaryOp::Xor => 2,
+            BinaryOp::And => 3,
+            BinaryOp::Shl | BinaryOp::Shr => 4,
+            BinaryOp::Add | BinaryOp::Sub => 5,
+            BinaryOp::Mul | BinaryOp::Div => 6,
+        }
+    }
+
+    fn of(kind: &TokenKind) -> Option<BinaryOp> {
+        Some(match kind {
+            TokenKind::Plus => BinaryOp::Add,
+            TokenKind::Minus => BinaryOp::Sub,
+            TokenKind::Star => BinaryOp::Mul,
+            TokenKind::Slash => BinaryOp::Div,
+            TokenKind::Shl => BinaryOp::Shl,
+            TokenKind::Shr => BinaryOp::Shr,
+            TokenKind::Amp => BinaryOp::And,
+            TokenKind::Pipe => BinaryOp::Or,
+            TokenKind::Caret => BinaryOp::Xor,
+            _ => return None,
+        })
+    }
+}
+
+/// Referencia a una etiqueta local numérica. `ordinal` dice a cuál de las definiciones de
+/// `number` apunta (la primera es 1); lo fija el ensamblador al recorrer el fuente en orden,
+/// porque `1b` y `1f` dependen de dónde está la referencia.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LocalRef {
+    pub number: u32,
+    pub forward: bool,
+    pub ordinal: usize,
+    pub span: Span,
+}
+
+impl LocalRef {
+    pub fn text(&self) -> String {
+        format!("{}{}", self.number, if self.forward { 'f' } else { 'b' })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Expr {
     Number(i64),
     Symbol(String, Span),
+    Local(LocalRef),
     Negate(Box<Expr>),
-    Add(Box<Expr>, Box<Expr>),
-    Sub(Box<Expr>, Box<Expr>),
+    Not(Box<Expr>),
+    Binary(BinaryOp, Box<Expr>, Box<Expr>),
     Modified(Modifier, Box<Expr>),
+}
+
+impl Expr {
+    /// Recorre las referencias locales para que el ensamblador las resuelva.
+    pub fn locals_mut(&mut self, visit: &mut dyn FnMut(&mut LocalRef)) {
+        match self {
+            Expr::Local(local) => visit(local),
+            Expr::Negate(inner) | Expr::Not(inner) | Expr::Modified(_, inner) => {
+                inner.locals_mut(visit)
+            }
+            Expr::Binary(_, left, right) => {
+                left.locals_mut(visit);
+                right.locals_mut(visit);
+            }
+            Expr::Number(_) | Expr::Symbol(..) => {}
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,8 +119,15 @@ pub struct Operand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LabelName {
+    Named(String),
+    /// `1:`; puede repetirse y se distingue por orden de aparición.
+    Local(u32),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Label {
-    pub name: String,
+    pub name: LabelName,
     pub span: Span,
 }
 
@@ -56,6 +140,19 @@ pub struct Statement {
 }
 
 impl Statement {
+    pub fn locals_mut(&mut self, visit: &mut dyn FnMut(&mut LocalRef)) {
+        for operand in &mut self.operands {
+            match &mut operand.kind {
+                OperandKind::Expr(expr)
+                | OperandKind::Memory {
+                    offset: Some(expr), ..
+                } => expr.locals_mut(visit),
+                OperandKind::Register(_) | OperandKind::Memory { offset: None, .. } => {}
+                OperandKind::Str(_) => {}
+            }
+        }
+    }
+
     pub fn is_directive(&self) -> bool {
         self.name.starts_with('.')
     }
@@ -74,27 +171,54 @@ pub struct Line {
     pub statement: Option<Statement>,
 }
 
-pub fn parse_line(text: &str) -> LineResult<Line> {
+/// Analiza una línea de fuente. Con `;` puede llevar varias sentencias; las columnas de los
+/// errores son siempre las de la línea completa.
+pub fn parse_line(text: &str) -> LineResult<Vec<Line>> {
     let tokens = tokenize(text)?;
-    let mut rest: &[Token] = &tokens;
+    tokens
+        .split(|token| token.kind == TokenKind::Semicolon)
+        .filter(|part| !part.is_empty())
+        .map(parse_statement)
+        .collect()
+}
+
+fn parse_statement(tokens: &[Token]) -> LineResult<Line> {
+    let mut rest = tokens;
     let mut labels = Vec::new();
-    while let [
-        Token {
-            kind: TokenKind::Ident(name),
-            span,
-        },
-        Token {
-            kind: TokenKind::Colon,
-            ..
-        },
-        tail @ ..,
-    ] = rest
-    {
-        labels.push(Label {
-            name: name.clone(),
-            span: *span,
-        });
-        rest = tail;
+    loop {
+        match rest {
+            [
+                Token {
+                    kind: TokenKind::Ident(name),
+                    span,
+                },
+                Token {
+                    kind: TokenKind::Colon,
+                    ..
+                },
+                tail @ ..,
+            ] => {
+                labels.push(Label {
+                    name: LabelName::Named(name.clone()),
+                    span: *span,
+                });
+                rest = tail;
+            }
+            [
+                Token {
+                    kind: TokenKind::LocalDef(number),
+                    span,
+                },
+                tail @ ..,
+            ] => {
+                labels.push(Label {
+                    name: LabelName::Local(*number),
+                    span: *span,
+                });
+                rest = tail;
+            }
+            _ => break,
+        }
     }
     let Some((head, tail)) = rest.split_first() else {
         return Ok(Line {
@@ -230,7 +354,7 @@ fn parse_expression(tokens: &[Token]) -> LineResult<Expr> {
         tokens,
         position: 0,
     };
-    let expr = parser.sum()?;
+    let expr = parser.binary(0)?;
     match parser.tokens.get(parser.position) {
         None => Ok(expr),
         Some(token) => Err(LineError::new(token.span, "sobra algo en la expresión")),
@@ -257,20 +381,27 @@ impl ExprParser<'_> {
         })
     }
 
-    fn sum(&mut self) -> LineResult<Expr> {
+    /// Operadores binarios por precedencia ascendente, todos asociativos por la izquierda.
+    fn binary(&mut self, min_precedence: u8) -> LineResult<Expr> {
         let mut left = self.unary()?;
-        loop {
-            match self.tokens.get(self.position).map(|token| &token.kind) {
-                Some(TokenKind::Plus) => {
-                    self.position += 1;
-                    left = Expr::Add(Box::new(left), Box::new(self.unary()?));
-                }
-                Some(TokenKind::Minus) => {
-                    self.position += 1;
-                    left = Expr::Sub(Box::new(left), Box::new(self.unary()?));
-                }
-                _ => return Ok(left),
-            }
+        while let Some(op) = self
+            .tokens
+            .get(self.position)
+            .and_then(|token| BinaryOp::of(&token.kind))
+            .filter(|op| op.precedence() > min_precedence)
+        {
+            self.position += 1;
+            let right = self.binary(op.precedence())?;
+            left = Expr::Binary(op, Box::new(left), Box::new(right));
+        }
+        Ok(left)
+    }
+
+    fn closing(&mut self) -> LineResult<()> {
+        let end = self.end_span();
+        match self.next().map(|t| t.kind.clone()) {
+            Some(TokenKind::RParen) => Ok(()),
+            _ => Err(LineError::new(end, "falta el paréntesis de cierre")),
         }
     }
 
@@ -281,8 +412,20 @@ impl ExprParser<'_> {
         };
         match token.kind {
             TokenKind::Minus => Ok(Expr::Negate(Box::new(self.unary()?))),
+            TokenKind::Tilde => Ok(Expr::Not(Box::new(self.unary()?))),
             TokenKind::Plus => self.unary(),
+            TokenKind::LParen => {
+                let inner = self.binary(0)?;
+                self.closing()?;
+                Ok(inner)
+            }
             TokenKind::Int(value) => Ok(Expr::Number(value)),
+            TokenKind::LocalRef { number, forward } => Ok(Expr::Local(LocalRef {
+                number,
+                forward,
+                ordinal: 0,
+                span: token.span,
+            })),
             TokenKind::Ident(name) => {
                 if Reg::parse(&name).is_some() {
                     return Err(LineError::new(
@@ -310,12 +453,9 @@ impl ExprParser<'_> {
                         format!("«%{name}» va seguido de un valor entre paréntesis"),
                     ));
                 }
-                let inner = self.sum()?;
-                let end = self.end_span();
-                match self.next().map(|t| t.kind.clone()) {
-                    Some(TokenKind::RParen) => Ok(Expr::Modified(modifier, Box::new(inner))),
-                    _ => Err(LineError::new(end, "falta el paréntesis de cierre")),
-                }
+                let inner = self.binary(0)?;
+                self.closing()?;
+                Ok(Expr::Modified(modifier, Box::new(inner)))
             }
             _ => Err(LineError::new(
                 token.span,
@@ -330,7 +470,20 @@ mod tests {
     use super::*;
 
     fn statement(text: &str) -> Statement {
-        parse_line(text).unwrap().statement.unwrap()
+        let mut lines = parse_line(text).unwrap();
+        assert_eq!(lines.len(), 1);
+        lines.remove(0).statement.unwrap()
+    }
+
+    fn expression(text: &str) -> Expr {
+        match statement(&format!(".word {text}")).operands.remove(0).kind {
+            OperandKind::Expr(expr) => expr,
+            other => panic!("no es una expresión: {other:?}"),
+        }
+    }
+
+    fn binary(op: BinaryOp, left: Expr, right: Expr) -> Expr {
+        Expr::Binary(op, Box::new(left), Box::new(right))
     }
 
     fn reg(name: &str) -> Reg {
@@ -339,16 +492,22 @@ mod tests {
 
     #[test]
     fn parses_labels_and_empty_lines() {
-        let line = parse_line("a: b: # nada").unwrap();
+        let lines = parse_line("a: 1: b: # nada").unwrap();
         assert_eq!(
-            line.labels
+            lines[0]
+                .labels
                 .iter()
-                .map(|l| l.name.as_str())
+                .map(|l| l.name.clone())
                 .collect::<Vec<_>>(),
-            ["a", "b"]
+            [
+                LabelName::Named("a".into()),
+                LabelName::Local(1),
+                LabelName::Named("b".into())
+            ]
         );
-        assert_eq!(line.statement, None);
-        assert_eq!(parse_line("   ").unwrap(), Line::default());
+        assert_eq!(lines[0].statement, None);
+        assert_eq!(parse_line("   ").unwrap(), Vec::new());
+        assert_eq!(parse_line(" ;; ").unwrap(), Vec::new());
     }
 
     #[test]
@@ -376,6 +535,11 @@ mod tests {
             &stmt.operands[2].kind,
             OperandKind::Expr(Expr::Modified(Modifier::Lo, _))
         ));
+        let stmt = statement("la a0, msg + 4");
+        assert!(matches!(
+            &stmt.operands[1].kind,
+            OperandKind::Expr(Expr::Binary(BinaryOp::Add, ..))
+        ));
         let stmt = statement("lw a0, %lo(msg)(a1)");
         assert!(matches!(
             &stmt.operands[1].kind,
@@ -398,6 +562,63 @@ mod tests {
         assert!(parse_line("addi a0, a0, a1 + 1").is_err());
         assert!(parse_line("lui a0, %pcrel_hi(x)").is_err());
         assert!(parse_line("123 a0").is_err());
+        assert!(parse_line("li a0, (1 + 2").is_err());
+        assert!(parse_line("li a0, 1 +").is_err());
+    }
+
+    #[test]
+    fn semicolons_split_statements_keeping_columns() {
+        let lines = parse_line("x: li a0, 1; 1: addi a0, a0, -1;; bnez a0, 1b").unwrap();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[1].labels[0].name, LabelName::Local(1));
+        let branch = lines[2].statement.as_ref().unwrap();
+        assert_eq!(branch.name_span.start, 34);
+        assert!(matches!(
+            branch.operands[1].kind,
+            OperandKind::Expr(Expr::Local(LocalRef {
+                number: 1,
+                forward: false,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn expressions_follow_c_precedence() {
+        let n = Expr::Number;
+        assert_eq!(
+            expression("1 + 2 * 3"),
+            binary(BinaryOp::Add, n(1), binary(BinaryOp::Mul, n(2), n(3)))
+        );
+        assert_eq!(
+            expression("8 - 4 - 2"),
+            binary(BinaryOp::Sub, binary(BinaryOp::Sub, n(8), n(4)), n(2))
+        );
+        assert_eq!(
+            expression("1 | 2 & 3 << 4"),
+            binary(
+                BinaryOp::Or,
+                n(1),
+                binary(BinaryOp::And, n(2), binary(BinaryOp::Shl, n(3), n(4)))
+            )
+        );
+        assert_eq!(
+            expression("(1 + 2) * ~3"),
+            binary(
+                BinaryOp::Mul,
+                binary(BinaryOp::Add, n(1), n(2)),
+                Expr::Not(Box::new(n(3)))
+            )
+        );
+        // Un valor entre paréntesis seguido de un registro sigue siendo un acceso a memoria.
+        let stmt = statement("lw a0, (4 * 2)(sp)");
+        assert!(matches!(
+            stmt.operands[1].kind,
+            OperandKind::Memory {
+                offset: Some(Expr::Binary(BinaryOp::Mul, ..)),
+                ..
+            }
+        ));
     }
 
     #[test]
