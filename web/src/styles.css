@@ -730,3 +730,141 @@ kbd {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+
+/* Ruta de datos: piezas y cables en línea fina; en uso pasan al color del texto y lo escrito en
+   el último ciclo (registro o memoria) y la instrucción en curso llevan el acento. */
+.datapath {
+  grid-column: 1 / -1;
+}
+
+.datapath-legend {
+  margin: 0;
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+
+.legend-active {
+  color: var(--fg);
+}
+
+.legend-written {
+  color: var(--accent);
+}
+
+.datapath-figure {
+  overflow-x: auto;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 0.75rem 0;
+}
+
+.datapath-figure:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.dp {
+  display: block;
+  width: 100%;
+  min-width: 56rem;
+  height: auto;
+  font-family: var(--font-mono);
+}
+
+.dp-wire polyline {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 1;
+  transition: stroke 160ms ease;
+}
+
+.dp-wire[data-active='true'] polyline {
+  stroke: var(--fg);
+  stroke-width: 1.4;
+}
+
+.dp-wire[data-wire='write_back'][data-active='true'] polyline {
+  stroke: var(--accent);
+}
+
+.dp-unit rect,
+.dp-unit polygon {
+  fill: var(--bg);
+  stroke: var(--line-strong);
+  stroke-width: 1;
+  transition: stroke 160ms ease;
+}
+
+.dp-unit[data-active='true'] > rect,
+.dp-unit[data-active='true'] > polygon {
+  stroke: var(--fg);
+}
+
+.dp-mux polygon {
+  fill: var(--surface);
+}
+
+.dp-selection {
+  fill: none;
+  stroke: var(--fg);
+  stroke-width: 1.6;
+}
+
+.dp text {
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+.dp-title {
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  fill: var(--muted);
+}
+
+.dp-port {
+  font-size: 9.5px;
+  fill: var(--muted);
+}
+
+.dp-value {
+  font-size: 10px;
+  fill: var(--fg);
+}
+
+.dp-value[data-written='true'],
+.dp-wire[data-wire='write_back'] .dp-value {
+  fill: var(--accent);
+}
+
+.dp-symbol {
+  font-size: 11px;
+  fill: var(--fg);
+}
+
+.dp-instruction {
+  font-size: 11px;
+  fill: var(--accent);
+}
+
+.dp-trap {
+  font-size: 9.5px;
+  fill: var(--muted);
+}
+
+.datapath-caption {
+  margin: 0.4rem 0 0;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dp-wire polyline,
+  .dp-unit rect,
+  .dp-unit polygon {
+    transition: none;
+  }
+}

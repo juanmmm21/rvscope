@@ -10,6 +10,7 @@ import {
   type RunStop,
   type Snapshot,
 } from './core';
+import { DatapathPanel, type DatapathElements } from './datapath/panel';
 import { createEditor, type SourceEditor } from './editor/editor';
 import { MemoryPanel, RegisterPanel, radioGroup, type MemoryElements } from './inspect/panels';
 import { breakpointAddresses, executionLocation, sourceMap, type SourceMap } from './run/location';
@@ -124,6 +125,7 @@ interface Controls {
   readonly consoleInput: HTMLInputElement;
   readonly consoleClose: HTMLButtonElement;
   readonly assemblyStatus: HTMLElement;
+  readonly datapath: DatapathElements;
 }
 
 function findControls(): Controls {
@@ -157,6 +159,11 @@ function findControls(): Controls {
     consoleInput: element('#console-input', HTMLInputElement),
     consoleClose: element('#console-close', HTMLButtonElement),
     assemblyStatus: element('#assembly-status', HTMLElement),
+    datapath: {
+      section: element('#datapath', HTMLElement),
+      figure: element('#datapath-figure', HTMLElement),
+      caption: element('#datapath-caption', HTMLElement),
+    },
   };
 }
 
@@ -168,6 +175,7 @@ class Workbench {
   readonly #runner: Runner;
   readonly #registers: RegisterPanel;
   readonly #memory: MemoryPanel;
+  readonly #datapath: DatapathPanel;
   // Etiquetas del último ensamblado correcto, para «Ir a» en la memoria.
   #labels: readonly Label[] = [];
   // Listado del último ensamblado correcto; `null` si hay errores o se editó después.
@@ -188,6 +196,7 @@ class Workbench {
       this.#ui.registerFormat,
       core.registers,
     );
+    this.#datapath = new DatapathPanel(this.#ui.datapath, core.registers);
     this.#memory = new MemoryPanel(this.#ui.memory, (error) => {
       this.#fail(error);
     });
@@ -511,6 +520,7 @@ class Workbench {
       this.#editor.showLocation(null);
       this.#registers.render(null);
       this.#memory.clear();
+      this.#datapath.render(null);
       return;
     }
     let snapshot: Snapshot;
@@ -535,6 +545,7 @@ class Workbench {
     ui.runStatus.textContent = describeRun(snapshot, running, this.#breakpointLine);
 
     this.#registers.render(snapshot);
+    this.#datapath.render(snapshot);
     this.#memory.render(snapshot, {
       labels: this.#labels,
       registers: this.#core.registers,
