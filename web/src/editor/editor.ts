@@ -15,6 +15,15 @@ import {
 } from '@codemirror/view';
 import { tags } from '@lezer/highlight';
 import type { AssembleReport, Vocabulary } from '../core';
+import type { ExecutionLocation } from '../run/location';
+import {
+  breakpointLines,
+  breakpointsChanged,
+  debugging,
+  locationField,
+  showLocation,
+  toggleBreakpoint,
+} from './debug';
 import { toDiagnostics } from './diagnostics';
 import { listingRows, type ListingRow } from './listing';
 import { riscvLanguage } from './riscv';
@@ -26,12 +35,16 @@ export interface EditorOptions {
   readonly vocabulary: Vocabulary;
   readonly source: string;
   readonly onChange: (source: string) => void;
+  readonly onBreakpointsChange: (lines: readonly number[]) => void;
 }
 
 export interface SourceEditor {
   readonly view: EditorView;
   source(): string;
   showReport(report: AssembleReport): void;
+  breakpointLines(): number[];
+  toggleBreakpointAtCursor(): void;
+  showLocation(location: ExecutionLocation | null): void;
 }
 
 interface ListingState {
@@ -78,8 +91,11 @@ function listingColumn(pane: HTMLElement): Extension {
       update(update: ViewUpdate): void {
         const listingChanged =
           update.startState.field(listingField) !== update.state.field(listingField);
+        const locationChanged =
+          update.startState.field(locationField) !== update.state.field(locationField);
         if (
           listingChanged ||
+          locationChanged ||
           update.docChanged ||
           update.viewportChanged ||
           update.geometryChanged
@@ -100,6 +116,7 @@ function listingColumn(pane: HTMLElement): Extension {
       #render(): void {
         const view = this.#view;
         const { rows, stale } = view.state.field(listingField);
+        const location = view.state.field(locationField);
         const offset = view.documentPadding.top;
         pane.dataset.stale = String(stale);
         this.#track.style.height = `${String(view.contentHeight)}px`;
@@ -114,6 +131,10 @@ function listingColumn(pane: HTMLElement): Extension {
           element.style.top = `${String(block.top + offset)}px`;
           element.style.height = `${String(block.height)}px`;
           element.title = row.detail;
+          const line = view.state.doc.lineAt(block.from).number;
+          if (location?.line === line) {
+            element.dataset.kind = location.kind;
+          }
           const cells: [string, string][] = [
             ['listing-address', row.address],
             ['listing-code', row.code],
@@ -176,6 +197,13 @@ const theme = EditorView.theme({
   '.cm-diagnostic': { fontFamily: 'var(--font-mono)', fontSize: '0.8rem' },
   '.cm-diagnostic-error': { borderLeftColor: 'var(--danger)' },
   '.cm-panels': { backgroundColor: 'var(--bg)', color: 'var(--fg)' },
+  '.cm-breakpoint-gutter .cm-gutterElement': {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '1.1rem',
+    cursor: 'pointer',
+  },
 });
 
 export function createEditor(options: EditorOptions): SourceEditor {
@@ -184,6 +212,7 @@ export function createEditor(options: EditorOptions): SourceEditor {
     state: EditorState.create({
       doc: options.source,
       extensions: [
+        debugging((state, line) => state.field(listingField).rows.has(line)),
         lineNumbers(),
         highlightActiveLineGutter(),
         highlightActiveLine(),
@@ -202,6 +231,9 @@ export function createEditor(options: EditorOptions): SourceEditor {
           if (update.docChanged) {
             options.onChange(update.state.doc.toString());
           }
+          if (breakpointsChanged(update.startState, update.state)) {
+            options.onBreakpointsChange(breakpointLines(update.state));
+          }
         }),
       ],
     }),
@@ -214,6 +246,13 @@ export function createEditor(options: EditorOptions): SourceEditor {
       const diagnostics = setDiagnostics(view.state, toDiagnostics(view.state.doc, report.errors));
       const rows = report.ok ? listingRows(report.listing) : new Map<number, ListingRow>();
       view.dispatch(diagnostics, { effects: setListing.of(rows) });
+    },
+    breakpointLines: () => breakpointLines(view.state),
+    toggleBreakpointAtCursor(): void {
+      toggleBreakpoint(view, view.state.doc.lineAt(view.state.selection.main.head).number);
+    },
+    showLocation(location: ExecutionLocation | null): void {
+      showLocation(view, location);
     },
   };
 }
