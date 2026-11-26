@@ -1,4 +1,4 @@
-import type { RegisterInfo, Slot, Snapshot } from '../core';
+import type { AluWires, Control, RegisterInfo, Slot, Snapshot } from '../core';
 
 // Qué enseña el diagrama del procesador de un ciclo para la instrucción que acaba de ejecutar.
 // Solo traduce lo que dice el núcleo (señales de control y cables) a qué cable está en uso, qué
@@ -85,14 +85,50 @@ const ALU_LABELS: Readonly<Record<string, string>> = {
 // rama que la instrucción usa de verdad.
 const WRITE_SOURCES = { alu: 'ALU', memory: 'memoria', link: 'pc + 4' } as const;
 
-function wire(active: boolean, value: number | null = null): WireState {
+export function aluLabel(alu: AluWires): string {
+  return ALU_LABELS[alu.function] ?? alu.function;
+}
+
+// Señales de control de una instrucción dichas con palabras; `source` es de dónde sale lo que
+// se escribe en `rd`, o `null` si no escribe.
+export function controlSignals(
+  control: Control,
+  alu: AluWires | null,
+  source: keyof typeof WRITE_SOURCES | null,
+): string[] {
+  const signals: string[] = [];
+  if (alu !== null) {
+    signals.push(`ALU ${aluLabel(alu)}`);
+    if (alu.b_source === 'immediate') {
+      signals.push('B ← inmediato');
+    }
+  }
+  if (control.mem_read) {
+    signals.push('lee memoria');
+  }
+  if (control.mem_write) {
+    signals.push('escribe memoria');
+  }
+  if (control.branch) {
+    signals.push('salto condicional');
+  }
+  if (control.jump) {
+    signals.push('salto');
+  }
+  if (source !== null) {
+    signals.push(`rd ← ${WRITE_SOURCES[source]}`);
+  }
+  return signals;
+}
+
+export function wireState(active: boolean, value: number | null = null): WireState {
   return { active, value: active ? value : null };
 }
 
 function idle(): Record<WireId, WireState> {
   const wires = {} as Record<WireId, WireState>;
   for (const id of WIRE_IDS) {
-    wires[id] = wire(false);
+    wires[id] = wireState(false);
   }
   return wires;
 }
@@ -158,30 +194,30 @@ export function singleCycleState(
   const executed = slot.next_pc !== null;
 
   const state: Record<WireId, WireState> = {
-    next_pc: wire(executed, slot.next_pc),
-    pc: wire(true),
-    pc_plus_4: wire(true, wires.pc_plus_4),
-    instruction: wire(true),
-    rs1_index: wire(control.reads_rs1),
-    rs2_index: wire(control.reads_rs2),
-    rd_index: wire(writes),
-    rs1: wire(control.reads_rs1, slot.rs1?.value ?? null),
-    rs2: wire(alu?.b_source === 'register', slot.rs2?.value ?? null),
-    store_data: wire(control.mem_write, slot.rs2?.value ?? null),
-    immediate: wire(alu?.b_source === 'immediate', wires.immediate),
-    pc_to_alu: wire(alu?.a_source === 'pc'),
-    zero: wire(alu?.a_source === 'zero'),
-    pc_to_target: wire(wires.target !== null),
-    immediate_to_target: wire(wires.target !== null, wires.immediate),
-    alu_a: wire(alu !== null),
-    alu_b: wire(alu !== null),
-    address: wire(control.mem_read || control.mem_write),
-    alu_to_write_back: wire(writes && source === 'alu'),
-    alu_to_pc: wire(wires.pc_source === 'alu'),
-    target: wire(wires.target !== null, wires.target),
-    memory_read: wire(control.mem_read),
-    link: wire(writes && source === 'link'),
-    write_back: wire(writes, write?.value ?? null),
+    next_pc: wireState(executed, slot.next_pc),
+    pc: wireState(true),
+    pc_plus_4: wireState(true, wires.pc_plus_4),
+    instruction: wireState(true),
+    rs1_index: wireState(control.reads_rs1),
+    rs2_index: wireState(control.reads_rs2),
+    rd_index: wireState(writes),
+    rs1: wireState(control.reads_rs1, slot.rs1?.value ?? null),
+    rs2: wireState(alu?.b_source === 'register', slot.rs2?.value ?? null),
+    store_data: wireState(control.mem_write, slot.rs2?.value ?? null),
+    immediate: wireState(alu?.b_source === 'immediate', wires.immediate),
+    pc_to_alu: wireState(alu?.a_source === 'pc'),
+    zero: wireState(alu?.a_source === 'zero'),
+    pc_to_target: wireState(wires.target !== null),
+    immediate_to_target: wireState(wires.target !== null, wires.immediate),
+    alu_a: wireState(alu !== null),
+    alu_b: wireState(alu !== null),
+    address: wireState(control.mem_read || control.mem_write),
+    alu_to_write_back: wireState(writes && source === 'alu'),
+    alu_to_pc: wireState(wires.pc_source === 'alu'),
+    target: wireState(wires.target !== null, wires.target),
+    memory_read: wireState(control.mem_read),
+    link: wireState(writes && source === 'link'),
+    write_back: wireState(writes, write?.value ?? null),
   };
 
   const muxes: Record<MuxId, number | null> = {
@@ -191,28 +227,7 @@ export function singleCycleState(
     write_back: source === null ? null : { alu: 0, memory: 1, link: 2 }[source],
   };
 
-  const signals: string[] = [];
-  if (alu !== null) {
-    signals.push(`ALU ${ALU_LABELS[alu.function] ?? alu.function}`);
-    if (alu.b_source === 'immediate') {
-      signals.push('B ← inmediato');
-    }
-  }
-  if (control.mem_read) {
-    signals.push('lee memoria');
-  }
-  if (control.mem_write) {
-    signals.push('escribe memoria');
-  }
-  if (control.branch) {
-    signals.push('salto condicional');
-  }
-  if (control.jump) {
-    signals.push('salto');
-  }
-  if (source !== null) {
-    signals.push(`rd ← ${WRITE_SOURCES[source]}`);
-  }
+  const signals = controlSignals(control, alu, source);
 
   return {
     ...base,
@@ -225,10 +240,7 @@ export function singleCycleState(
       rs2: slot.rs2 === null ? null : registerName(registers, slot.rs2.reg),
       rd: write === null || source === null ? null : registerName(registers, write.reg),
     },
-    alu:
-      alu === null
-        ? null
-        : { label: (ALU_LABELS[alu.function] ?? alu.function).toUpperCase(), out: alu.out },
+    alu: alu === null ? null : { label: aluLabel(alu).toUpperCase(), out: alu.out },
     memory: access,
     written: write === null || source === null ? null : write.value,
   };

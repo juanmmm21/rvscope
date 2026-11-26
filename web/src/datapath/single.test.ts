@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Control, RegisterInfo, Slot, Snapshot, Wires } from '../core';
-import { splitSignals } from './diagram';
+import { splitSignals } from './svg';
 import { describeCycle } from './panel';
 import { WIRE_IDS, singleCycleSlot, singleCycleState, type WireId } from './single';
 

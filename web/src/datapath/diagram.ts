@@ -1,109 +1,22 @@
 import { hexWord } from '../inspect/format';
-import {
-  ALU_OUTLINE,
-  BOXES,
-  MUXES,
-  VIEW_BOX,
-  WIRES,
-  WIRE_LABELS,
-  type Box,
-  type MuxShape,
-  type Point,
-} from './layout';
+import { ALU_OUTLINE, BOXES, MUXES, VIEW_BOX, WIRES, WIRE_LABELS } from './layout';
 import { MUX_IDS, WIRE_IDS, type MuxId, type SingleCycleState, type WireId } from './single';
+import {
+  box,
+  mux,
+  points,
+  selectInput,
+  showWire,
+  splitSignals,
+  svg,
+  text,
+  wire,
+  type MuxParts,
+  type WireParts,
+} from './svg';
 
 // Dibujo SVG de la ruta de datos del procesador de un ciclo. Se construye una vez y en cada
 // ciclo solo se cambian clases y textos, para que pintar a velocidad máxima no cueste nada.
-
-const SVG = 'http://www.w3.org/2000/svg';
-
-type SvgTag = keyof SVGElementTagNameMap;
-
-function svg<K extends SvgTag>(
-  tag: K,
-  attributes: Readonly<Record<string, string | number>> = {},
-  parent?: SVGElement,
-): SVGElementTagNameMap[K] {
-  const node = document.createElementNS(SVG, tag);
-  for (const [name, value] of Object.entries(attributes)) {
-    node.setAttribute(name, String(value));
-  }
-  parent?.append(node);
-  return node;
-}
-
-function points(path: readonly Point[]): string {
-  return path.map(([x, y]) => `${String(x)},${String(y)}`).join(' ');
-}
-
-function text(
-  parent: SVGElement,
-  x: number,
-  y: number,
-  className: string,
-  anchor: 'start' | 'middle' | 'end' = 'middle',
-  content = '',
-): SVGTextElement {
-  const node = svg('text', { x, y, class: className, 'text-anchor': anchor }, parent);
-  node.textContent = content;
-  return node;
-}
-
-function box(parent: SVGElement, shape: Box, title: string): SVGGElement {
-  const group = svg('g', { class: 'dp-unit' }, parent);
-  svg('rect', { x: shape.x, y: shape.y, width: shape.width, height: shape.height, rx: 2 }, group);
-  text(group, shape.x + shape.width / 2, shape.y + 13, 'dp-title', 'middle', title);
-  return group;
-}
-
-// Caben unos 34 caracteres de Geist Mono por línea en la caja de control.
-const SIGNAL_LINE = 34;
-
-export function splitSignals(signals: readonly string[]): readonly [string, string] {
-  const lines: [string[], string[]] = [[], []];
-  let length = 0;
-  for (const signal of signals) {
-    const added = (length === 0 ? 0 : 3) + signal.length;
-    if (lines[1].length === 0 && length + added <= SIGNAL_LINE) {
-      lines[0].push(signal);
-      length += added;
-    } else {
-      lines[1].push(signal);
-    }
-  }
-  return [lines[0].join(' · '), lines[1].join(' · ')];
-}
-
-interface MuxParts {
-  readonly group: SVGGElement;
-  readonly selection: SVGPolylineElement;
-}
-
-function mux(parent: SVGElement, shape: MuxShape): MuxParts {
-  const group = svg('g', { class: 'dp-unit dp-mux' }, parent);
-  const { x, y, width, height } = shape;
-  const inset = 8;
-  svg(
-    'polygon',
-    {
-      points: points([
-        [x, y],
-        [x + width, y + inset],
-        [x + width, y + height - inset],
-        [x, y + height],
-      ]),
-    },
-    group,
-  );
-  svg('title', {}, group).textContent = shape.title;
-  const selection = svg('polyline', { class: 'dp-selection', points: '' }, group);
-  return { group, selection };
-}
-
-interface WireParts {
-  readonly group: SVGGElement;
-  readonly label: SVGTextElement | null;
-}
 
 export interface DatapathParts {
   readonly pc: SVGTextElement;
@@ -136,21 +49,12 @@ export class SingleCycleDiagram {
       'aria-label': caption,
     });
     this.element = root;
-    // Los cables en uso van en su propio grupo, encima, para que un tramo compartido con un
-    // cable apagado se vea encendido.
     this.#idle = svg('g', { class: 'dp-wires' }, root);
     this.#active = svg('g', { class: 'dp-wires' }, root);
 
     const wires = {} as Record<WireId, WireParts>;
     for (const id of WIRE_IDS) {
-      const group = svg('g', { class: 'dp-wire', 'data-wire': id }, this.#idle);
-      for (const path of WIRES[id]) {
-        svg('polyline', { points: points(path) }, group);
-      }
-      const spot = WIRE_LABELS[id];
-      const label =
-        spot === undefined ? null : text(group, spot.x, spot.y, 'dp-value', spot.anchor);
-      wires[id] = { group, label };
+      wires[id] = wire(this.#idle, id, WIRES[id], WIRE_LABELS[id]);
     }
     this.#wires = wires;
 
@@ -203,31 +107,13 @@ export class SingleCycleDiagram {
   }
 
   update(state: SingleCycleState): void {
+    const layers = { idle: this.#idle, active: this.#active };
     for (const id of WIRE_IDS) {
-      const { group, label } = this.#wires[id];
       const { active, value } = state.wires[id];
-      const target = active ? this.#active : this.#idle;
-      if (group.parentNode !== target) {
-        target.append(group);
-      }
-      group.dataset.active = String(active);
-      if (label !== null) {
-        label.textContent = value === null ? '' : hexWord(value);
-      }
+      showWire(this.#wires[id], active, value === null ? '' : hexWord(value), layers);
     }
     for (const id of MUX_IDS) {
-      const shape = MUXES[id];
-      const selected = state.muxes[id];
-      const input = selected === null ? undefined : shape.inputs[selected];
-      this.#muxes[id].selection.setAttribute(
-        'points',
-        input === undefined
-          ? ''
-          : points([
-              [shape.x, input],
-              [shape.x + shape.width, shape.output],
-            ]),
-      );
+      selectInput(this.#muxes[id], MUXES[id], state.muxes[id]);
     }
 
     const parts = this.#parts;

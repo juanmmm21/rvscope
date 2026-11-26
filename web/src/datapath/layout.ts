@@ -1,33 +1,12 @@
 import type { MuxId, WireId } from './single';
+import type { Box, LabelSpot, MuxShape, Point } from './svg';
 
 // Geometría del diagrama del procesador de un ciclo, en unidades del `viewBox`. El dibujo es
 // propio de rvscope: el flujo va de izquierda a derecha (búsqueda, decodificación, ALU,
 // memoria y escritura) y las vueltas al PC y al banco de registros rodean el diagrama por
 // arriba y por abajo para no cruzar las piezas.
 
-export type Point = readonly [number, number];
-
 export const VIEW_BOX = { width: 1020, height: 450 } as const;
-
-export interface Box {
-  readonly x: number;
-  readonly y: number;
-  readonly width: number;
-  readonly height: number;
-}
-
-export interface MuxShape extends Box {
-  // Altura de cada entrada, de arriba abajo, y de la salida.
-  readonly inputs: readonly number[];
-  readonly output: number;
-  readonly title: string;
-}
-
-export interface LabelSpot {
-  readonly x: number;
-  readonly y: number;
-  readonly anchor: 'start' | 'middle' | 'end';
-}
 
 export const MUXES: Readonly<Record<MuxId, MuxShape>> = {
   pc: {
