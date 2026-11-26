@@ -1,4 +1,4 @@
-import type { Bypass, RegisterInfo, Slot, Snapshot } from '../core';
+import type { Bypass, Operand, RegisterInfo, Slot, Snapshot } from '../core';
 import {
   aluLabel,
   controlSignals,
@@ -10,6 +10,7 @@ import {
 // Qué enseña el diagrama de los procesadores de 5 etapas en el último ciclo. Cada cable
 // pertenece a una etapa y se enciende con lo que dice el núcleo de la instrucción que hay en
 // ella; los multiplexores eligen según esas mismas señales. No se calcula nada del procesador.
+// En la doble emisión cada vía tiene su diagrama: el estado es el de una vía.
 
 export const PIPELINE_STAGES = ['if', 'id', 'ex', 'mem', 'wb'] as const;
 
@@ -100,7 +101,16 @@ export interface StageCard {
   readonly trap: string | null;
 }
 
+// De dónde llega un operando adelantado: el registro de segmentación y la vía que lo produjo.
+export interface ForwardSource {
+  readonly from: Bypass;
+  readonly lane: number;
+}
+
 export interface PipelineState {
+  // Vía que se dibuja y cuántas tiene el procesador.
+  readonly lane: number;
+  readonly lanes: number;
   readonly stages: readonly StageCard[];
   readonly wires: Readonly<Record<PipelineWireId, WireState>>;
   readonly muxes: Readonly<Record<PipelineMuxId, number | null>>;
@@ -112,7 +122,7 @@ export interface PipelineState {
   readonly signals: readonly string[];
   // EX
   readonly alu: { readonly label: string; readonly out: number } | null;
-  readonly bypasses: { readonly a: Bypass | null; readonly b: Bypass | null };
+  readonly bypasses: { readonly a: ForwardSource | null; readonly b: ForwardSource | null };
   // MEM
   readonly memory: MemoryAccessView | null;
   // Registros que se leen (ID) y el que se escribe (WB).
@@ -126,17 +136,45 @@ export interface PipelineState {
 
 type Lanes = Partial<Record<PipelineStage, { readonly slot: Slot | null }>>;
 
-function lanesOf(snapshot: Snapshot | null): Lanes {
+function lanesOf(snapshot: Snapshot | null, lane: number): Lanes {
   const lanes: Lanes = {};
   if (snapshot === null || snapshot.cycle === 0) {
     return lanes;
   }
   for (const stage of snapshot.stages) {
     if (stage.stage !== 'single') {
-      lanes[stage.stage] = { slot: stage.lanes[0] ?? null };
+      lanes[stage.stage] = { slot: stage.lanes[lane] ?? null };
     }
   }
   return lanes;
+}
+
+// Vías del procesador según la forma de la vista (la de IF, o 1 si no hay vista).
+export function laneCount(snapshot: Snapshot | null): number {
+  const fetch = snapshot?.stages.find((stage) => stage.stage === 'if');
+  return Math.max(1, fetch?.lanes.length ?? 1);
+}
+
+// Vía de la última instrucción buscada que sigue adelante: su `pc + 4` es el siguiente PC.
+// Con dos vías la joven va detrás de la antigua, así que manda la de índice mayor.
+function sequentialLane(snapshot: Snapshot | null): number | null {
+  const fetch = snapshot?.stages.find((stage) => stage.stage === 'if');
+  if (fetch === undefined || snapshot === null || snapshot.cycle === 0) {
+    return null;
+  }
+  for (let lane = fetch.lanes.length - 1; lane >= 0; lane -= 1) {
+    if (fetch.lanes[lane]?.state === 'active') {
+      return lane;
+    }
+  }
+  return null;
+}
+
+function forwardSource(operand: Operand | null): ForwardSource | null {
+  if (operand === null || operand.bypass === null) {
+    return null;
+  }
+  return { from: operand.bypass, lane: operand.bypass_lane ?? 0 };
 }
 
 function card(stage: PipelineStage, lane: { readonly slot: Slot | null } | undefined): StageCard {
@@ -168,8 +206,9 @@ function registerName(registers: readonly RegisterInfo[], index: number): string
 export function pipelineState(
   snapshot: Snapshot | null,
   registers: readonly RegisterInfo[],
+  lane = 0,
 ): PipelineState {
-  const lanes = lanesOf(snapshot);
+  const lanes = lanesOf(snapshot, lane);
   const fetch = live(lanes.if);
   const decode = live(lanes.id);
   const execute = live(lanes.ex);
@@ -186,10 +225,12 @@ export function pipelineState(
   const wbSource = written === null ? null : (wbControl?.write_source ?? null);
 
   // El siguiente PC viene del salto que se resuelve en EX o, si no, de `pc + 4` de la búsqueda;
-  // con IF retenida (o sin buscar) el PC no se escribe.
+  // con IF retenida (o sin buscar) el PC no se escribe. Con dos vías solo lo escribe una: la
+  // del salto o la de la última instrucción buscada.
   const redirect =
     exWires?.pc_source === 'target' || exWires?.pc_source === 'alu' ? exWires.pc_source : null;
-  const sequential = redirect === null && fetch?.state === 'active';
+  const sequential =
+    redirect === null && fetch?.state === 'active' && sequentialLane(snapshot) === lane;
   const pcInput = redirect ?? (sequential ? 'sequential' : null);
   const nextPc =
     redirect !== null
@@ -202,6 +243,12 @@ export function pipelineState(
   const idRs2 = decode?.rs2 ?? null;
   const rs1 = execute?.rs1 ?? null;
   const rs2 = execute?.rs2 ?? null;
+  const sourceA = forwardSource(rs1);
+  const sourceB = forwardSource(rs2);
+  // Los cables de adelantamiento salen de esta vía; lo que llega de la otra lo dice la marca
+  // junto al multiplexor.
+  const ownForward = (source: ForwardSource | null, from: Bypass): boolean =>
+    source?.from === from && source.lane === lane;
   const exLink = exControl?.write_source === 'link';
   const access = memory?.data_access ?? null;
   const memAccess =
@@ -233,10 +280,10 @@ export function pipelineState(
     ex_pc_plus_4: wireState(exLink),
     ex_rs1: wireState(rs1 !== null && rs1.bypass === null, rs1?.value ?? null),
     ex_rs2: wireState(rs2 !== null && rs2.bypass === null, rs2?.value ?? null),
-    forward_mem_a: wireState(rs1?.bypass === 'ExMem'),
-    forward_mem_b: wireState(rs2?.bypass === 'ExMem'),
-    forward_wb_a: wireState(rs1?.bypass === 'MemWb'),
-    forward_wb_b: wireState(rs2?.bypass === 'MemWb'),
+    forward_mem_a: wireState(ownForward(sourceA, 'ExMem')),
+    forward_mem_b: wireState(ownForward(sourceB, 'ExMem')),
+    forward_wb_a: wireState(ownForward(sourceA, 'MemWb')),
+    forward_wb_b: wireState(ownForward(sourceB, 'MemWb')),
     ex_operand_a: wireState(alu?.a_source === 'register', rs1?.value ?? null),
     ex_operand_b: wireState(alu?.b_source === 'register', rs2?.value ?? null),
     ex_store_data: wireState(exControl?.mem_write ?? false, rs2?.value ?? null),
@@ -286,6 +333,8 @@ export function pipelineState(
   };
 
   return {
+    lane,
+    lanes: laneCount(snapshot),
     stages: PIPELINE_STAGES.map((stage) => card(stage, lanes[stage])),
     wires,
     muxes,
@@ -295,7 +344,7 @@ export function pipelineState(
     signals:
       idControl === null ? [] : controlSignals(idControl, null, idControl.write_source ?? null),
     alu: alu === null ? null : { label: aluLabel(alu).toUpperCase(), out: alu.out },
-    bypasses: { a: rs1?.bypass ?? null, b: rs2?.bypass ?? null },
+    bypasses: { a: sourceA, b: sourceB },
     memory: memAccess,
     registers: {
       rs1: idRs1 === null ? null : registerName(registers, idRs1.reg),
@@ -336,10 +385,20 @@ export function bypassName(bypass: Bypass): string {
   return BYPASS_NAMES[bypass];
 }
 
-// Frase con lo mismo que el dibujo, para quien no lo ve.
-export function describePipeline(state: PipelineState): string {
+export function laneName(lane: number): string {
+  return `vía ${String(lane)}`;
+}
+
+// «EX/MEM» o, con dos vías, «EX/MEM de la vía 1».
+export function sourceName(source: ForwardSource, lanes: number): string {
+  const name = bypassName(source.from);
+  return lanes > 1 ? `${name} de la ${laneName(source.lane)}` : name;
+}
+
+// Lo que pasa en una vía, sin el «Último ciclo»; null si no hay nada.
+function describeLane(state: PipelineState): string | null {
   if (state.stages.every((card) => card.condition === 'empty')) {
-    return 'Todavía no se ha ejecutado ningún ciclo.';
+    return null;
   }
   const stages = state.stages
     .filter((card) => card.condition !== 'empty')
@@ -357,10 +416,10 @@ export function describePipeline(state: PipelineState): string {
     });
   const notes: string[] = [];
   if (state.bypasses.a !== null) {
-    notes.push(`operando A adelantado desde ${bypassName(state.bypasses.a)}`);
+    notes.push(`operando A adelantado desde ${sourceName(state.bypasses.a, state.lanes)}`);
   }
   if (state.bypasses.b !== null) {
-    notes.push(`operando B adelantado desde ${bypassName(state.bypasses.b)}`);
+    notes.push(`operando B adelantado desde ${sourceName(state.bypasses.b, state.lanes)}`);
   }
   if (state.written !== null && state.registers.rd !== null) {
     notes.push(`${state.registers.rd} = ${String(state.written)}`);
@@ -370,5 +429,20 @@ export function describePipeline(state: PipelineState): string {
       notes.push(card.trap);
     }
   }
-  return `Último ciclo: ${[stages.join(' · '), ...notes].join('; ')}.`;
+  return [stages.join(' · '), ...notes].join('; ');
+}
+
+// Frase con lo mismo que el dibujo, para quien no lo ve; con dos vías, una parte por vía.
+export function describePipeline(...states: readonly PipelineState[]): string {
+  const parts = states.flatMap((state) => {
+    const text = describeLane(state);
+    if (text === null) {
+      return [];
+    }
+    return [states.length > 1 ? `Vía ${String(state.lane)}: ${text}` : text];
+  });
+  if (parts.length === 0) {
+    return 'Todavía no se ha ejecutado ningún ciclo.';
+  }
+  return `Último ciclo: ${parts.join('. ')}.`;
 }

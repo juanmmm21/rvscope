@@ -118,14 +118,14 @@ const REDIRECT = snapshot({
     text: 'addi a7, zero, 10',
     state: 'flushed',
     control: ADDI,
-    rs1: { reg: 0, value: 0, bypass: null },
+    rs1: { reg: 0, value: 0, bypass: null, bypass_lane: null },
     wires: wires(0x08, { immediate: 10 }),
   }),
   ex: slot({
     pc: 0x14,
     text: 'jalr ra, 16(ra)',
     control: JALR,
-    rs1: { reg: 1, value: 8, bypass: 'ExMem' },
+    rs1: { reg: 1, value: 8, bypass: 'ExMem', bypass_lane: 0 },
     result: 0x18,
     next_pc: 0x18,
     wires: wires(0x14, {
@@ -146,7 +146,7 @@ const REDIRECT = snapshot({
     pc: 0x04,
     text: 'lw a0, 0(a0)',
     control: LOAD,
-    rs1: { reg: 10, value: 0x10000000, bypass: null },
+    rs1: { reg: 10, value: 0x10000000, bypass: null, bypass_lane: null },
     result: 6,
     next_pc: 0x08,
     data_access: { kind: 'load', address: 0x10000000, width: 'word', value: 6 },
@@ -200,7 +200,7 @@ describe('pipelineState', () => {
     expect(state.muxes.forward_b).toBeNull();
     expect(state.muxes.alu_b).toBe(1);
     expect(state.wires.ex_immediate).toEqual({ active: true, value: 16 });
-    expect(state.bypasses).toEqual({ a: 'ExMem', b: null });
+    expect(state.bypasses).toEqual({ a: { from: 'ExMem', lane: 0 }, b: null });
     // MEM: auipc solo lleva su resultado hacia WB.
     expect(state.wires.mem_alu_result).toEqual({ active: true, value: 8 });
     expect(state.wires.mem_address.active).toBe(false);
@@ -229,15 +229,15 @@ describe('pipelineState', () => {
           pc: 0x28,
           text: 'addi t0, zero, 1',
           control: ADDI,
-          rs1: { reg: 0, value: 0, bypass: null },
+          rs1: { reg: 0, value: 0, bypass: null, bypass_lane: null },
           wires: wires(0x28, { immediate: 1 }),
         }),
         ex: slot({
           pc: 0x24,
           text: 'sw a0, 0(sp)',
           control: STORE,
-          rs1: { reg: 2, value: 0x7fffffe8, bypass: 'MemWb' },
-          rs2: { reg: 10, value: 6, bypass: null },
+          rs1: { reg: 2, value: 0x7fffffe8, bypass: 'MemWb', bypass_lane: 0 },
+          rs2: { reg: 10, value: 6, bypass: null, bypass_lane: null },
           next_pc: 0x28,
           wires: wires(0x24, {
             immediate: 0,
@@ -297,7 +297,7 @@ describe('pipelineState', () => {
           text: 'lw a0, 0(a0)',
           state: 'stalled',
           control: LOAD,
-          rs1: { reg: 10, value: 0, bypass: null },
+          rs1: { reg: 10, value: 0, bypass: null, bypass_lane: null },
           wires: wires(0x04, { immediate: 0 }),
         }),
         ex: null,
@@ -331,8 +331,8 @@ describe('pipelineState', () => {
           pc: 0x2c,
           text: 'bge t0, a0, 0x44',
           control: BRANCH,
-          rs1: { reg: 5, value: 1, bypass: 'ExMem' },
-          rs2: { reg: 10, value: 6, bypass: null },
+          rs1: { reg: 5, value: 1, bypass: 'ExMem', bypass_lane: 0 },
+          rs2: { reg: 10, value: 6, bypass: null, bypass_lane: null },
           next_pc: 0x30,
           wires: wires(0x2c, {
             immediate: 0x1c,
@@ -381,6 +381,131 @@ describe('pipelineState', () => {
   });
 });
 
+// Doble emisión: IF busca un par, la joven de ID espera a la siguiente vuelta (lee lo que
+// escribe la antigua) y en EX el `add` de la vía 0 toma `a1` de la joven del par de delante y
+// `a0` de la antigua.
+function dualSnapshot(
+  slots: Partial<Record<PipelineStage, readonly [Slot | null, Slot | null]>>,
+): Snapshot {
+  const base = snapshot({});
+  return {
+    ...base,
+    model: '2-vias',
+    stages: (['if', 'id', 'ex', 'mem', 'wb'] as const).map((stage) => ({
+      stage,
+      name: stage.toUpperCase(),
+      lanes: [...(slots[stage] ?? [null, null])],
+    })),
+  };
+}
+
+const ADD: Control = { ...NONE, reads_rs1: true, reads_rs2: true, write_source: 'alu' };
+
+const PAIRS = dualSnapshot({
+  if: [
+    slot({ pc: 0x18, text: 'nop', wires: wires(0x18) }),
+    slot({ pc: 0x1c, text: 'nop', wires: wires(0x1c) }),
+  ],
+  id: [
+    slot({ pc: 0x10, text: 'addi a0, a2, 1', control: ADDI, wires: wires(0x10) }),
+    slot({ pc: 0x14, text: 'addi a1, a0, 1', control: ADDI, state: 'stalled', wires: wires(0x14) }),
+  ],
+  ex: [
+    slot({
+      pc: 0x08,
+      text: 'add a2, a1, a0',
+      control: ADD,
+      rs1: { reg: 11, value: 2, bypass: 'ExMem', bypass_lane: 1 },
+      rs2: { reg: 10, value: 1, bypass: 'ExMem', bypass_lane: 0 },
+      result: 3,
+      next_pc: 0x0c,
+      wires: wires(0x08, {
+        alu: { function: 'add', a_source: 'register', b_source: 'register', a: 2, b: 1, out: 3 },
+        pc_source: 'sequential',
+      }),
+    }),
+    null,
+  ],
+});
+
+describe('pipelineState con dos vías', () => {
+  const [old, young] = [0, 1].map((lane) => pipelineState(PAIRS, REGISTERS, lane)) as [
+    ReturnType<typeof pipelineState>,
+    ReturnType<typeof pipelineState>,
+  ];
+
+  it('cada vía enseña lo suyo', () => {
+    expect([old.lane, old.lanes, young.lane, young.lanes]).toEqual([0, 2, 1, 2]);
+    expect(old.stages.map((card) => card.condition)).toEqual([
+      'active',
+      'active',
+      'active',
+      'bubble',
+      'bubble',
+    ]);
+    expect(young.stages.map((card) => card.condition)).toEqual([
+      'active',
+      'stalled',
+      'bubble',
+      'bubble',
+      'bubble',
+    ]);
+    expect([old.pc, young.pc]).toEqual([0x18, 0x1c]);
+  });
+
+  it('el PC lo escribe solo la vía de la última instrucción buscada', () => {
+    expect(old.muxes.pc).toBeNull();
+    expect(old.wires.next_pc.active).toBe(false);
+    expect(old.wires.if_pc_plus_4).toEqual({ active: true, value: 0x1c });
+    expect(young.muxes.pc).toBe(0);
+    expect(young.wires.next_pc).toEqual({ active: true, value: 0x20 });
+  });
+
+  it('lo adelantado desde la otra vía no enciende los cables de esta', () => {
+    expect(old.bypasses).toEqual({
+      a: { from: 'ExMem', lane: 1 },
+      b: { from: 'ExMem', lane: 0 },
+    });
+    expect(old.muxes.forward_a).toBe(1);
+    expect(old.muxes.forward_b).toBe(1);
+    expect(old.wires.forward_mem_a.active).toBe(false);
+    expect(old.wires.forward_mem_b.active).toBe(true);
+    expect(old.wires.ex_operand_a).toEqual({ active: true, value: 2 });
+    expect(young.muxes.forward_a).toBeNull();
+  });
+
+  it('cuenta cada vía con palabras', () => {
+    expect(describePipeline(old, young)).toBe(
+      'Último ciclo: Vía 0: IF nop · ID addi a0, a2, 1 · EX add a2, a1, a0 · MEM burbuja · ' +
+        'WB burbuja; operando A adelantado desde EX/MEM de la vía 1; operando B adelantado ' +
+        'desde EX/MEM de la vía 0. Vía 1: IF nop · ID addi a1, a0, 1 (retenida) · EX burbuja · ' +
+        'MEM burbuja · WB burbuja.',
+    );
+  });
+
+  it('un salto de la vía joven escribe el PC desde ella', () => {
+    const branch = dualSnapshot({
+      if: [
+        slot({ pc: 0x10, state: 'flushed', wires: wires(0x10) }),
+        slot({ pc: 0x14, state: 'flushed', wires: wires(0x14) }),
+      ],
+      ex: [
+        slot({ pc: 0x00, text: 'addi a0, a0, 1', control: ADDI, wires: wires(0x00) }),
+        slot({
+          pc: 0x04,
+          text: 'beq zero, zero, 0x40',
+          control: BRANCH,
+          next_pc: 0x40,
+          wires: wires(0x04, { target: 0x40, immediate: 0x3c, pc_source: 'target' }),
+        }),
+      ],
+    });
+    const lanes = [0, 1].map((lane) => pipelineState(branch, REGISTERS, lane));
+    expect(lanes.map((state) => state.muxes.pc)).toEqual([null, 1]);
+    expect(lanes[1]?.wires.next_pc).toEqual({ active: true, value: 0x40 });
+  });
+});
+
 describe('datapathKind', () => {
   const model = (pipelined: boolean, lanes: number): ModelInfo => ({
     id: 'x',
@@ -395,6 +520,6 @@ describe('datapathKind', () => {
   it('elige el diagrama por la forma del modelo', () => {
     expect(datapathKind(model(false, 1))).toBe('single');
     expect(datapathKind(model(true, 1))).toBe('pipeline');
-    expect(datapathKind(model(true, 2))).toBe('none');
+    expect(datapathKind(model(true, 2))).toBe('pipeline');
   });
 });

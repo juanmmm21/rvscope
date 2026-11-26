@@ -84,7 +84,7 @@ const ADDI_CONTROL: Control = {
 const ADDI = slot({
   text: 'addi a0, a1, -1',
   control: ADDI_CONTROL,
-  rs1: { reg: 11, value: 5, bypass: null },
+  rs1: { reg: 11, value: 5, bypass: null, bypass_lane: null },
   result: 4,
   register_write: { reg: 10, value: 4 },
   wires: wires({
@@ -130,8 +130,8 @@ describe('singleCycleState', () => {
           alu_source: 'immediate',
           mem_write: true,
         },
-        rs1: { reg: 2, value: 0x7ffffff0, bypass: null },
-        rs2: { reg: 1, value: 0x10, bypass: null },
+        rs1: { reg: 2, value: 0x7ffffff0, bypass: null, bypass_lane: null },
+        rs2: { reg: 1, value: 0x10, bypass: null, bypass_lane: null },
         address: 0x7ffffff4,
         data_access: { kind: 'store', address: 0x7ffffff4, width: 'word', value: 0x10 },
         wires: wires({
@@ -162,8 +162,8 @@ describe('singleCycleState', () => {
       slot({
         text: 'bge t0, a0, 0x44',
         control: { ...NO_CONTROL, reads_rs1: true, reads_rs2: true, branch: true },
-        rs1: { reg: 5, value: 7, bypass: null },
-        rs2: { reg: 10, value: 6, bypass: null },
+        rs1: { reg: 5, value: 7, bypass: null, bypass_lane: null },
+        rs2: { reg: 10, value: 6, bypass: null, bypass_lane: null },
         next_pc: 0x80,
         wires: wires({
           immediate: 0x40,
@@ -202,7 +202,7 @@ describe('singleCycleState', () => {
       slot({
         text: 'jalr zero, 0(ra)',
         control: { ...NO_CONTROL, reads_rs1: true, alu_source: 'immediate', jump: true },
-        rs1: { reg: 1, value: 0x44, bypass: null },
+        rs1: { reg: 1, value: 0x44, bypass: null, bypass_lane: null },
         next_pc: 0x44,
         wires: wires({
           immediate: 0,
@@ -278,7 +278,7 @@ describe('singleCycleState', () => {
           mem_read: true,
           write_source: 'memory',
         },
-        rs1: { reg: 2, value: 0x100, bypass: null },
+        rs1: { reg: 2, value: 0x100, bypass: null, bypass_lane: null },
         data_access: { kind: 'load', address: 0x100, width: 'word', value: 6 },
         register_write: { reg: 6, value: 6 },
         wires: wires({

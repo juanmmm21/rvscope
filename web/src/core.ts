@@ -91,6 +91,8 @@ export interface Operand {
   readonly reg: number;
   readonly value: number;
   readonly bypass: Bypass | null;
+  // Vía de la instrucción que dio el valor adelantado; va con `bypass` (0 si hay una sola vía).
+  readonly bypass_lane: number | null;
 }
 
 export interface DataAccess {
