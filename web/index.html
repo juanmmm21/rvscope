@@ -7,11 +7,28 @@
     <meta name="description" content="Simulador de RISC-V en el navegador" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>rvscope</title>
+    <script>
+      // Tema fijado antes de pintar (ver src/theme/theme.ts: misma clave y valores).
+      try {
+        const theme = localStorage.getItem('rvscope.theme');
+        if (theme === 'light' || theme === 'dark') {
+          document.documentElement.dataset.theme = theme;
+        }
+      } catch (error) {
+        console.warn('rvscope: no se pudo leer el tema guardado', error);
+      }
+    </script>
   </head>
   <body>
+    <a class="skip-link" href="#editor">Saltar al código</a>
     <header class="topbar">
       <span class="brand">rvscope</span>
-      <span class="label" id="core-status" role="status">cargando núcleo…</span>
+      <div class="topbar-end">
+        <fieldset class="segmented" id="theme">
+          <legend class="visually-hidden">Tema</legend>
+        </fieldset>
+        <span class="label" id="core-status" role="status">cargando núcleo…</span>
+      </div>
     </header>
     <nav class="controls" aria-label="Ejecución">
       <div class="control-group model">
@@ -48,14 +65,20 @@
           </div>
           <div class="source-body">
             <div id="editor" class="editor"></div>
-            <div id="listing" class="listing" aria-label="Desensamblado por línea"></div>
+            <div
+              id="listing"
+              class="listing"
+              role="group"
+              aria-label="Desensamblado por línea"
+            ></div>
           </div>
           <p id="assembly-status" class="assembly-status" role="status" aria-live="polite"></p>
           <p class="shortcuts label">
-            <kbd>F9</kbd> punto de parada · <kbd>F10</kbd> paso · <kbd>Mayús</kbd>+<kbd>F10</kbd>
-            paso atrás · <kbd>Ctrl</kbd>+<kbd>Intro</kbd> ejecutar o pausar · <kbd>Ctrl</kbd>+<kbd
-              >S</kbd
+            <kbd>Esc</kbd> y <kbd>Tab</kbd> salir del editor · <kbd>F9</kbd> punto de parada ·
+            <kbd>F10</kbd> paso · <kbd>Mayús</kbd>+<kbd>F10</kbd> paso atrás · <kbd>Ctrl</kbd>+<kbd
+              >Intro</kbd
             >
+            ejecutar o pausar · <kbd>Ctrl</kbd>+<kbd>S</kbd>
             ensamblar
           </p>
         </section>

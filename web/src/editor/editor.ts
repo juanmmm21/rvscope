@@ -224,7 +224,9 @@ export function createEditor(options: EditorOptions): SourceEditor {
         riscvLanguage(options.vocabulary),
         syntaxHighlighting(highlightStyle),
         theme,
-        EditorView.contentAttributes.of({ 'aria-label': 'Código en ensamblador' }),
+        // `tabindex` no añade una parada (ya es editable), pero hace que las herramientas de
+        // accesibilidad vean que el área con scroll tiene algo enfocable dentro.
+        EditorView.contentAttributes.of({ 'aria-label': 'Código en ensamblador', tabindex: '0' }),
         // Tab indenta; Escape y luego Tab saca el foco del editor (convenio de CodeMirror).
         keymap.of([...defaultKeymap, ...historyKeymap, ...lintKeymap, indentWithTab]),
         EditorView.updateListener.of((update) => {

@@ -18,7 +18,7 @@ import {
 
 // Grupo de opciones excluyentes como radios: el teclado (flechas) y los lectores de pantalla
 // ya saben manejarlos sin código propio.
-function radioGroup<T extends string>(
+export function radioGroup<T extends string>(
   parent: HTMLElement,
   name: string,
   options: readonly { readonly id: T; readonly label: string; readonly description: string }[],

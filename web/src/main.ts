@@ -11,11 +11,12 @@ import {
   type Snapshot,
 } from './core';
 import { createEditor, type SourceEditor } from './editor/editor';
-import { MemoryPanel, RegisterPanel, type MemoryElements } from './inspect/panels';
+import { MemoryPanel, RegisterPanel, radioGroup, type MemoryElements } from './inspect/panels';
 import { breakpointAddresses, executionLocation, sourceMap, type SourceMap } from './run/location';
 import { Runner, browserScheduler } from './run/runner';
 import { DEFAULT_SPEED_INDEX, SPEEDS, speedAt } from './run/speed';
 import { plural, runCounters } from './run/stats';
+import { THEME_CHOICES, applyTheme, readTheme, storeTheme } from './theme/theme';
 
 // Pantalla de trabajo: editor, controles de ejecución, registros y consola. Todo lo que pasa
 // en el procesador lo dice el núcleo; aquí solo se le piden operaciones y se pinta la foto.
@@ -224,6 +225,11 @@ class Workbench {
     this.#bind();
     this.#showSpeed();
     this.#assemble();
+  }
+
+  // El enlace apunta al contenedor (funciona sin JS); el foco tiene que ir al área editable.
+  focusEditor(): void {
+    this.#editor.view.focus();
   }
 
   #setupModels(): void {
@@ -545,13 +551,33 @@ class Workbench {
   }
 }
 
+function setupTheme(): void {
+  const root = document.documentElement;
+  const storage = (): Storage => window.localStorage;
+  radioGroup(
+    element('#theme', HTMLFieldSetElement),
+    'theme',
+    THEME_CHOICES,
+    readTheme(storage),
+    (choice) => {
+      applyTheme(root, choice);
+      storeTheme(storage, choice);
+    },
+  );
+}
+
 async function boot(): Promise<void> {
+  setupTheme();
   const status = element('#core-status', HTMLElement);
   try {
     const core = await loadCore();
     status.textContent = `núcleo ${core.version}`;
     status.dataset.state = 'ready';
-    new Workbench(core);
+    const workbench = new Workbench(core);
+    element('.skip-link', HTMLAnchorElement).addEventListener('click', (event) => {
+      event.preventDefault();
+      workbench.focusEditor();
+    });
   } catch (error: unknown) {
     status.textContent = 'no se pudo cargar el núcleo';
     status.dataset.state = 'error';
