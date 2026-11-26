@@ -15,7 +15,8 @@ The ISA covered is RV32I plus the M extension (multiply and divide).
 ## What makes it interesting
 
 - **A real two-pass assembler**, not a regex translator: tokenizer with source spans, operand and expression parser with C precedence (`label+4`, `(1 << 31) - 1`, `%hi(sym)`, `%lo(sym)(a0)`, `.equ` constants), numeric local labels (`1:` / `1b` / `1f`), several statements per line with `;`, sections, data directives with natural alignment, and pseudo-instruction expansion with the shortest correct sequence (`li` picks one or two instructions depending on the constant).
-- **Conformance with the official [riscv-tests](https://github.com/riscv-software-src/riscv-tests)**: the 40 applicable rv32ui tests and the 8 rv32um tests are assembled by rvscope's own assembler and run on every processor model in CI. They are preprocessed once from the upstream sources with a small replacement for the test environment, so neither CI nor contributors need a RISC-V toolchain.
+- **Conformance with the official [riscv-tests](https://github.com/riscv-software-src/riscv-tests)**: the 40 applicable rv32ui tests and the 8 rv32um tests are assembled by rvscope's own assembler and run in CI on every processor model that resolves data hazards, which must also end in exactly the same architectural state as the single-cycle reference. They are preprocessed once from the upstream sources with a small replacement for the test environment, so neither CI nor contributors need a RISC-V toolchain.
+- **Two processor models sharing one semantics**: a single-cycle reference and a classic five-stage pipeline (IF, ID, EX, MEM, WB) with no forwarding and no hazard detection, so a dependent instruction visibly reads the stale value. Branches resolve in EX and flush the two younger instructions, traps are precise (detected in their stage, taken at write-back, nothing younger touches memory), and both models call the same ALU, branch and memory-access functions, so they cannot disagree on what an instruction does, only on when.
 - **Bit-exact encoding and decoding** for every instruction format (R, I, S, B, U, J), checked with encode → decode → disassemble → re-assemble round trips over every instruction in the table.
 - **Error reporting built for an editor**: every error carries line, column and length, all errors in a file are reported at once, and a fuzz-style test throws thousands of garbage lines at the assembler to prove it never panics.
 - **A strict boundary between core and UI**: only one crate knows about `wasm-bindgen`; everything else is plain Rust, tested natively and usable from the command line.
@@ -24,7 +25,8 @@ The ISA covered is RV32I plus the M extension (multiply and divide).
 
 1. **`rv-isa`** holds the instruction table: mnemonic, format, opcode/funct fields, operand shape, a one-line description and a pseudocode summary for each of the 48 RV32IM instructions, plus the pseudo-instruction list and the register file with its ABI calling convention.
 2. **`rv-asm`** reads the source line by line. The first pass places every statement in `.text` or `.data` and binds labels (a label on its own line attaches to the next item, after alignment). The second pass evaluates operands, expands pseudo-instructions, encodes them through `rv-isa` and builds a listing that maps every address back to its source line.
-3. **`rv-cli`** exposes the assembler and the single-cycle simulator from a terminal; **`rv-wasm`** exposes the core to the web app.
+3. **`rv-core`** loads the program into a segmented memory map and runs it on the chosen processor model; every model implements the same `Processor` trait (step one clock cycle, run, inspect state) and reports what each retired instruction changed.
+4. **`rv-cli`** exposes the assembler and the simulator from a terminal; **`rv-wasm`** exposes the core to the web app.
 
 ## Architecture
 
@@ -79,7 +81,7 @@ bad.s:1:14: addi: el inmediato 9000 está fuera de rango (-2048 a 2047)
 bad.s:2:1: instrucción desconocida «bogus»
 ```
 
-Run a program on the single-cycle processor. What the program prints goes to stdout, what it reads (system calls 5, 8 and 12) comes from stdin, and the stop reason, the source line it happened on and the register file go to stderr, so redirecting stdout keeps only the program's own output:
+Run a program (on the single-cycle processor unless told otherwise). What the program prints goes to stdout, what it reads (system calls 5, 8 and 12) comes from stdin, and the stop reason, the source line it happened on and the register file go to stderr, so redirecting stdout keeps only the program's own output:
 
 ```bash
 cargo run -p rv-cli -- run examples/factorial.s
@@ -94,7 +96,21 @@ zero 0x00000000     ra 0x00000010     sp 0x7ffffff0     gp 0x00000000
 ...
 ```
 
-`--trace` adds one line per retired instruction (cycle, address, word, source line, disassembly and what it changed), `--numeric` names registers `x0`–`x31`, and `--max-cycles <n>` caps the run (10 000 000 by default) so an infinite loop ends with a message instead of hanging. The process exit code is the one the program passed to its exit system call; a fault or an unfinished run exits with 1.
+`--trace` adds one line per retired instruction (cycle, address, word, source line, disassembly and what it changed), `--numeric` names registers `x0`–`x31`, and `--max-cycles <n>` caps the run (10 000 000 by default) so an infinite loop ends with a message instead of hanging. `--cpu <model>` picks the processor: `un-ciclo` (default) or `5-etapas-sin-riesgos`, the five-stage pipeline without forwarding or hazard detection, where an instruction only sees a register written three or more instructions earlier:
+
+```bash
+cargo run -p rv-cli -- run --trace --cpu 5-etapas-sin-riesgos hazard.s
+```
+
+```text
+       5  00000000  00500513  L1     addi a0, zero, 5             a0 = 0x00000005
+       6  00000004  00150593  L2     addi a1, a0, 1               a1 = 0x00000001
+       7  00000008  00000013  L3     addi zero, zero, 0
+       8  0000000c  00000013  L4     addi zero, zero, 0
+       9  00000010  00150613  L5     addi a2, a0, 1               a2 = 0x00000006
+```
+
+The process exit code is the one the program passed to its exit system call; a fault or an unfinished run exits with 1.
 
 List every supported instruction and pseudo-instruction, grouped:
 
