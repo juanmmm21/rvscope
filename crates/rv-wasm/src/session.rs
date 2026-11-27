@@ -9,10 +9,10 @@
 
 use rv_asm::{AsmError, DIRECTIVES, MODIFIERS, Program};
 use rv_core::{
-    DataAccess, Halt, Machine, MapError, Model, PipelineView, Processor, Region, RegisterWrite,
-    Retired, SlotState, Stage, Stats, Trap,
+    DataAccess, Halt, Machine, MapError, Model, PipelineTrace, PipelineView, Processor, Region,
+    RegisterWrite, Retired, SlotState, Stage, Stats, TraceCell, Trap,
 };
-use rv_isa::{INSTRUCTIONS, PSEUDO_INSTRUCTIONS, Reg, RegisterStyle};
+use rv_isa::{INSTRUCTIONS, Instruction, PSEUDO_INSTRUCTIONS, Reg, RegisterStyle};
 use serde::Serialize;
 use thiserror::Error;
 
@@ -21,6 +21,9 @@ use thiserror::Error;
 /// de `interval` pasos, que crece con la longitud de la ejecución.
 const MAX_CHECKPOINTS: usize = 128;
 const INITIAL_INTERVAL: u64 = 256;
+
+/// Ciclos que enseña la tabla del pipeline: los últimos, hasta el actual.
+pub const TRACE_WINDOW: u64 = 32;
 
 /// Lo más que se puede leer de memoria de una vez: la interfaz pide solo lo que se ve.
 pub const MAX_MEMORY_READ: u32 = 64 * 1024;
@@ -217,6 +220,25 @@ pub struct SlotSnapshot {
     pub wires: Option<rv_core::Wires>,
 }
 
+/// Tabla del pipeline (instrucción × ciclo) de los últimos `TRACE_WINDOW` ciclos como mucho.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PipelineTable {
+    /// Primer y último ciclo de la ventana; los dos 0 antes del primer paso.
+    pub first_cycle: u64,
+    pub last_cycle: u64,
+    pub rows: Vec<TableRow>,
+}
+
+/// Una instrucción dinámica: la misma dirección da una fila por cada vez que se busca. Sin
+/// identificador: tras un paso atrás la tabla se rehace y tiene que salir igual que antes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct TableRow {
+    pub pc: u32,
+    pub text: Option<String>,
+    pub line: Option<usize>,
+    pub cells: Vec<TraceCell>,
+}
+
 /// Entrada que el usuario dio a la consola tras `at` pasos efectivos.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct InputEvent {
@@ -251,6 +273,8 @@ struct Loaded {
     interval: u64,
     last_retired: Vec<Retired>,
     awaiting: bool,
+    /// Columnas de la tabla del pipeline; el ciclo de cada una es el número de paso.
+    trace: PipelineTrace,
 }
 
 impl Loaded {
@@ -269,6 +293,7 @@ impl Loaded {
             interval: INITIAL_INTERVAL,
             last_retired: Vec::new(),
             awaiting: false,
+            trace: PipelineTrace::new(TRACE_WINDOW),
         })
     }
 
@@ -285,6 +310,7 @@ impl Loaded {
         }
         self.last_retired = retired;
         self.steps += 1;
+        self.trace.record(self.steps, self.machine.view());
         if self.steps % self.interval == 0 {
             self.save_checkpoint();
         }
@@ -314,13 +340,15 @@ impl Loaded {
         };
         self.checkpoints
             .retain(|checkpoint| checkpoint.steps <= target);
-        // Se parte de una copia estrictamente anterior para repetir al menos el último paso y
-        // saber qué retiró (lo que se resalta); la inicial vale cuando se vuelve al principio.
+        // Se parte de una copia anterior a toda la ventana de la tabla del pipeline, para
+        // rehacerla, y así también se repite el último paso y se sabe qué retiró (lo que se
+        // resalta); la inicial vale cuando se vuelve cerca del principio.
+        let earliest = target.saturating_sub(TRACE_WINDOW);
         let Some(checkpoint) = self
             .checkpoints
             .iter()
             .rev()
-            .find(|checkpoint| checkpoint.steps < target || checkpoint.steps == 0)
+            .find(|checkpoint| checkpoint.steps <= earliest)
             .cloned()
         else {
             return false;
@@ -331,13 +359,18 @@ impl Loaded {
         let mut machine = checkpoint.machine;
         let mut next_input = checkpoint.inputs;
         let mut last_retired = Vec::new();
+        let mut trace = PipelineTrace::new(TRACE_WINDOW);
         for steps in checkpoint.steps..target {
             next_input = self.apply_inputs(&mut machine, next_input, steps);
             last_retired = machine.step();
+            if steps >= earliest {
+                trace.record(steps + 1, machine.view());
+            }
         }
         self.apply_inputs(&mut machine, next_input, target);
         self.machine = machine;
         self.last_retired = last_retired;
+        self.trace = trace;
         self.steps = target;
         self.awaiting = false;
         true
@@ -614,6 +647,28 @@ impl Session {
             can_step_back: loaded.steps > 0,
             cycle: view.cycle,
             stages: stage_snapshots(&loaded.program, view),
+        })
+    }
+
+    /// Tabla del pipeline hasta el ciclo actual, con el desensamblado y la línea de cada fila.
+    pub fn pipeline_table(&self) -> Result<PipelineTable, SessionError> {
+        let loaded = self.loaded()?;
+        let trace = &loaded.trace;
+        Ok(PipelineTable {
+            first_cycle: trace.first_cycle(),
+            last_cycle: trace.cycle(),
+            rows: trace
+                .rows()
+                .map(|row| TableRow {
+                    pc: row.pc,
+                    text: row
+                        .word
+                        .and_then(|word| Instruction::decode(word).ok())
+                        .map(|instruction| instruction.disassemble(row.pc, RegisterStyle::Abi)),
+                    line: loaded.program.line_at(row.pc),
+                    cells: row.cells.clone(),
+                })
+                .collect(),
         })
     }
 

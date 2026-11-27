@@ -3,8 +3,11 @@
 
 #![allow(clippy::unwrap_used)]
 
-use rv_core::Model;
-use rv_wasm::session::{HaltKind, RunStop, Session, SessionError, Snapshot, Status, StepOutcome};
+use rv_core::{Bypass, Model, SlotState, Stage};
+use rv_wasm::session::{
+    HaltKind, PipelineTable, RunStop, Session, SessionError, Snapshot, Status, StepOutcome,
+    TRACE_WINDOW,
+};
 
 const FACTORIAL: &str = include_str!("../../../examples/factorial.s");
 
@@ -153,25 +156,32 @@ fn snapshot_marks_changed_registers_and_disassembles_stages() {
     assert!(snapshot.can_step_back);
 }
 
-/// Instantánea tras `steps` pasos dados desde el principio, sin volver atrás nunca.
-fn fresh_snapshot(source: &str, model: Model, steps: u64) -> Snapshot {
+/// Instantánea y tabla del pipeline tras `steps` pasos, sin volver atrás nunca.
+fn fresh(source: &str, model: Model, steps: u64) -> (Snapshot, PipelineTable) {
     let mut session = session(source, model);
     for _ in 0..steps {
         session.step().unwrap();
     }
-    session.snapshot().unwrap()
+    state(&session)
+}
+
+fn state(session: &Session) -> (Snapshot, PipelineTable) {
+    (
+        session.snapshot().unwrap(),
+        session.pipeline_table().unwrap(),
+    )
 }
 
 #[test]
 fn stepping_back_retraces_every_cycle_on_every_model() {
     for model in Model::ALL {
         let mut session = session(FACTORIAL, model);
-        let mut history = vec![session.snapshot().unwrap()];
+        let mut history = vec![state(&session)];
         while session.step().unwrap() == StepOutcome::Stepped {
-            history.push(session.snapshot().unwrap());
+            history.push(state(&session));
         }
         while let Some(expected) = history.pop() {
-            assert_eq!(session.snapshot().unwrap(), expected, "{model:?}");
+            assert_eq!(state(&session), expected, "{model:?}");
             let moved = session.step_back().unwrap();
             assert_eq!(moved, !history.is_empty());
         }
@@ -190,8 +200,8 @@ fn stepping_back_from_far_away_matches_a_fresh_run() {
         for _ in 0..3 {
             session.step_back().unwrap();
         }
-        let at = session.snapshot().unwrap();
-        assert_eq!(at, fresh_snapshot(LONG_LOOP, model, at.stats.cycles));
+        let at = state(&session);
+        assert_eq!(at, fresh(LONG_LOOP, model, at.0.stats.cycles));
         assert_eq!(run_to_end(&mut session), RunStop::Halted);
         assert_eq!(session.snapshot().unwrap().stats.cycles, total);
     }
@@ -203,8 +213,8 @@ fn step_back_after_a_long_run_stays_cheap_and_exact() {
     assert_eq!(session.run(12_345).unwrap(), RunStop::Budget);
     session.step_back().unwrap();
     assert_eq!(
-        session.snapshot().unwrap(),
-        fresh_snapshot(LONG_LOOP, Model::FiveStageStalls, 12_344)
+        state(&session),
+        fresh(LONG_LOOP, Model::FiveStageStalls, 12_344)
     );
 }
 
@@ -225,6 +235,7 @@ fn console_input_survives_stepping_back() {
         session.push_input("hola\n").unwrap();
         assert_eq!(run_to_end(&mut session), RunStop::Halted);
         let end = session.snapshot().unwrap();
+        let end_table = session.pipeline_table().unwrap();
         assert_eq!(end.output, "42hola\n");
 
         // Volver hasta antes de la primera lectura devuelve toda la entrada a la cola.
@@ -236,7 +247,62 @@ fn console_input_survives_stepping_back() {
         assert_eq!(rewound.pending_input, "40\n2\nhola\n".len());
         assert_eq!(run_to_end(&mut session), RunStop::Halted);
         assert_eq!(session.snapshot().unwrap(), end, "{model:?}");
+        assert_eq!(session.pipeline_table().unwrap(), end_table, "{model:?}");
     }
+}
+
+#[test]
+fn the_pipeline_table_shows_the_last_cycles_with_stalls_and_bypasses() {
+    let mut session = session(FACTORIAL, Model::FiveStageForwarding);
+    let empty = session.pipeline_table().unwrap();
+    assert_eq!((empty.first_cycle, empty.last_cycle), (0, 0));
+    assert!(empty.rows.is_empty());
+
+    assert_eq!(session.run(60).unwrap(), RunStop::Budget);
+    let table = session.pipeline_table().unwrap();
+    assert_eq!(table.last_cycle, 60);
+    assert_eq!(table.first_cycle, 60 - TRACE_WINDOW + 1);
+    let cells = || table.rows.iter().flat_map(|row| &row.cells);
+    assert!(cells().all(|cell| cell.cycle >= table.first_cycle && cell.cycle <= 60));
+    // Cada fila lleva su desensamblado y su línea, y en el último ciclo hay una por etapa.
+    assert!(
+        table
+            .rows
+            .iter()
+            .all(|row| row.text.is_some() && row.line.is_some())
+    );
+    let last: Vec<Stage> = cells()
+        .filter(|cell| cell.cycle == 60)
+        .map(|cell| cell.stage)
+        .collect();
+    assert!(last.len() <= 5);
+    // A lo largo del factorial hay cargas usadas enseguida (carga-uso) y resultados
+    // adelantados a EX desde los dos registros de segmentación, siempre en EX.
+    let mut stalls = 0;
+    let mut bypassed = Vec::new();
+    while session.step().unwrap() == StepOutcome::Stepped {
+        let table = session.pipeline_table().unwrap();
+        let cycle = table.last_cycle;
+        for cell in table
+            .rows
+            .iter()
+            .flat_map(|row| &row.cells)
+            .filter(|cell| cell.cycle == cycle)
+        {
+            if cell.state == SlotState::Stalled {
+                stalls += 1;
+            }
+            for bypass in cell.bypasses.iter().flatten() {
+                assert_eq!(cell.stage, Stage::Ex);
+                bypassed.push(bypass.from);
+            }
+        }
+    }
+    assert!(stalls > 0);
+    assert!(bypassed.contains(&Bypass::ExMem) && bypassed.contains(&Bypass::MemWb));
+
+    session.reset().unwrap();
+    assert!(session.pipeline_table().unwrap().rows.is_empty());
 }
 
 #[test]

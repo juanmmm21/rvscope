@@ -141,4 +141,12 @@ impl Simulator {
         let snapshot = self.session.snapshot().map_err(js_error)?;
         to_js(&snapshot)
     }
+
+    /// Tabla del pipeline de los últimos ciclos; se pide aparte de `snapshot` porque solo hace
+    /// falta con su panel a la vista.
+    #[wasm_bindgen(js_name = pipelineTable)]
+    pub fn pipeline_table(&self) -> Result<JsValue, JsError> {
+        let table = self.session.pipeline_table().map_err(js_error)?;
+        to_js(&table)
+    }
 }
