@@ -49,12 +49,6 @@ pub struct TraceRow {
     pub cells: Vec<TraceCell>,
 }
 
-impl TraceRow {
-    fn last_cycle(&self) -> Option<u64> {
-        self.cells.last().map(|cell| cell.cycle)
-    }
-}
-
 /// Las últimas `window` columnas de la tabla del pipeline, alimentadas con la vista de cada
 /// ciclo en orden.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -175,20 +169,15 @@ impl PipelineTrace {
         self.rows.iter_mut().rev().find(|row| row.id == id)
     }
 
-    /// Quita las celdas anteriores a la ventana y las filas que se quedan sin ninguna.
+    /// Quita las celdas anteriores a la ventana y las filas que se quedan sin ninguna (no
+    /// solo las primeras: una vaciada puede acabar antes que otra más antigua retenida).
     fn trim(&mut self) {
         let first = self.first_cycle();
         for row in &mut self.rows {
             let old = row.cells.partition_point(|cell| cell.cycle < first);
             row.cells.drain(..old);
         }
-        while self
-            .rows
-            .front()
-            .is_some_and(|row| row.last_cycle().is_none_or(|cycle| cycle < first))
-        {
-            self.rows.pop_front();
-        }
+        self.rows.retain(|row| !row.cells.is_empty());
     }
 }
 
@@ -326,6 +315,39 @@ mod tests {
         assert_eq!(stages(rows[3]), [(5, Stage::If, Flushed)]);
         assert_eq!(stages(rows[4]), [(6, Stage::If, Active)]);
         assert_eq!(rows[4].id, 4);
+    }
+
+    #[test]
+    fn rows_that_leave_the_window_go_even_behind_an_older_one() {
+        let mut trace = PipelineTrace::new(1);
+        trace.record(1, &view(1, [slot(0, Active), None, None, None, None]));
+        trace.record(
+            2,
+            &view(
+                2,
+                [
+                    slot(8, Flushed),
+                    slot(4, Flushed),
+                    slot(0, Active),
+                    None,
+                    None,
+                ],
+            ),
+        );
+        trace.record(
+            3,
+            &view(3, [slot(16, Active), None, None, slot(0, Active), None]),
+        );
+        let rows: Vec<&TraceRow> = trace.rows().collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            (rows[0].pc, stages(rows[0])),
+            (0, vec![(3, Stage::Mem, Active)])
+        );
+        assert_eq!(
+            (rows[1].pc, stages(rows[1])),
+            (16, vec![(3, Stage::If, Active)])
+        );
     }
 
     /// Pipeline sin riesgos que busca una instrucción por ciclo: la buscada en el ciclo `k`
