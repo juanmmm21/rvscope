@@ -1,4 +1,11 @@
-import init, { Simulator, models, registers, version, vocabulary } from './wasm/pkg/rv_wasm.js';
+import init, {
+  Simulator,
+  cheatSheet,
+  models,
+  registers,
+  version,
+  vocabulary,
+} from './wasm/pkg/rv_wasm.js';
 
 // Formas de lo que serializa `crates/rv-wasm/src/session.rs`. Se escriben a mano: si cambia un
 // `Serialize` de allí, cambia aquí. `None` llega como `null`.
@@ -56,6 +63,71 @@ export interface Vocabulary {
   readonly registers: readonly string[];
   // Sin el `%`.
   readonly modifiers: readonly string[];
+}
+
+// Chuleta de instrucciones (`crates/rv-wasm/src/cheatsheet.rs`).
+export type InstructionGroupId =
+  | 'arithmetic'
+  | 'logical'
+  | 'shift'
+  | 'compare'
+  | 'upper'
+  | 'load'
+  | 'store'
+  | 'branch'
+  | 'jump'
+  | 'multiply'
+  | 'divide'
+  | 'system';
+
+export type InstructionFormat = 'R' | 'I' | 'S' | 'B' | 'U' | 'J';
+
+export interface CheatInstruction {
+  readonly name: string;
+  readonly syntax: string;
+  readonly summary: string;
+  readonly operation: string;
+  readonly format: InstructionFormat;
+  readonly extension: 'I' | 'M';
+}
+
+export interface CheatGroup {
+  readonly id: InstructionGroupId;
+  readonly title: string;
+  readonly instructions: readonly CheatInstruction[];
+}
+
+export interface PseudoInfo {
+  readonly name: string;
+  readonly syntax: string;
+  readonly expansion: string;
+  readonly summary: string;
+  readonly example: string;
+}
+
+export interface DirectiveInfo {
+  readonly name: string;
+  readonly syntax: string;
+  readonly summary: string;
+  readonly example: string;
+}
+
+export interface SyscallInfo {
+  readonly number: number;
+  readonly name: string;
+  readonly kind: 'output' | 'input' | 'exit';
+  // Vacíos si el servicio no recibe argumentos o no devuelve nada.
+  readonly arguments: string;
+  readonly result: string;
+  readonly description: string;
+}
+
+export interface CheatSheet {
+  readonly groups: readonly CheatGroup[];
+  readonly pseudo_instructions: readonly PseudoInfo[];
+  readonly directives: readonly DirectiveInfo[];
+  readonly syscalls: readonly SyscallInfo[];
+  readonly registers: readonly RegisterInfo[];
 }
 
 export type StepOutcome = 'stepped' | 'awaiting_input' | 'halted';
@@ -320,6 +392,7 @@ export interface Core {
   readonly models: readonly ModelInfo[];
   readonly registers: readonly RegisterInfo[];
   readonly vocabulary: Vocabulary;
+  readonly cheatSheet: CheatSheet;
   createMachine(): Machine;
 }
 
@@ -332,6 +405,7 @@ export function loadCore(): Promise<Core> {
     models: models() as ModelInfo[],
     registers: registers() as RegisterInfo[],
     vocabulary: vocabulary() as Vocabulary,
+    cheatSheet: cheatSheet() as CheatSheet,
     createMachine: () => new Machine(),
   }));
   return ready;
