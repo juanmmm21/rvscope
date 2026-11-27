@@ -150,3 +150,64 @@ function fieldBits(field: EncodedField, width: number, word: number | null): str
 export function hexWord(word: number): string {
   return `0x${(word >>> 0).toString(16).padStart(8, '0')}`;
 }
+
+// Buscador: el texto se compara sin mayúsculas ni tildes («division» encuentra «División») y
+// con todas las palabras de la búsqueda, en cualquier orden y en cualquier parte de la entrada.
+export function foldText(content: string): string {
+  return content.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+}
+
+export function queryTerms(query: string): string[] {
+  return foldText(query)
+    .split(/\s+/u)
+    .filter((term) => term !== '');
+}
+
+export function matchesTerms(searchText: string, terms: readonly string[]): boolean {
+  return terms.every((term) => searchText.includes(term));
+}
+
+// Lo que el buscador mira de cada entrada, ya plegado: mnemónico, sintaxis, qué hace y la
+// operación o expansión (el panel añade el título de la sección). El formato va como «formato r» para poder filtrar por formato sin que
+// una «r» suelta encuentre media chuleta.
+export function instructionSearchText(instruction: CheatInstruction): string {
+  return foldText(
+    [
+      instruction.name,
+      instruction.syntax,
+      instruction.summary,
+      instruction.operation,
+      `formato ${instruction.format}`,
+      instruction.extension === 'M' ? 'extension m' : '',
+    ].join('\n'),
+  );
+}
+
+export function pseudoSearchText(pseudo: PseudoInfo): string {
+  return foldText([pseudo.name, pseudo.syntax, pseudo.summary, pseudo.expansion].join('\n'));
+}
+
+export function directiveSearchText(directive: DirectiveInfo): string {
+  return foldText([directive.name, directive.syntax, directive.summary].join('\n'));
+}
+
+export function syscallSearchText(info: SyscallInfo): string {
+  return foldText([syscallSignature(info), info.name, info.description].join('\n'));
+}
+
+export function registerSearchText(register: RegisterInfo): string {
+  return foldText(
+    [register.name, register.abi, register.role, saverLabel(register.saver)].join('\n'),
+  );
+}
+
+// Frase del resultado para lectores de pantalla y para la línea bajo el buscador.
+export function searchSummary(query: string, matches: number): string {
+  if (queryTerms(query).length === 0) {
+    return '';
+  }
+  if (matches === 0) {
+    return `Nada coincide con «${query.trim()}»`;
+  }
+  return matches === 1 ? '1 coincidencia' : `${String(matches)} coincidencias`;
+}

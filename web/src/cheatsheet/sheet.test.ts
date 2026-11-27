@@ -1,11 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import type { CheatInstruction, CheatSheet, EncodedField, PseudoInfo, SyscallInfo } from '../core';
 import {
+  directiveSearchText,
   expansionLines,
   fieldCells,
+  foldText,
   hexWord,
+  instructionSearchText,
+  matchesTerms,
+  pseudoSearchText,
+  queryTerms,
+  registerSearchText,
   saverLabel,
+  searchSummary,
   sheetSections,
+  syscallSearchText,
   syscallSignature,
 } from './sheet';
 
@@ -203,5 +212,71 @@ describe('hexWord', () => {
   it('escribe la palabra en hexadecimal con ocho cifras', () => {
     expect(hexWord(0xff010113)).toBe('0xff010113');
     expect(hexWord(0x73)).toBe('0x00000073');
+  });
+});
+
+describe('buscador', () => {
+  const [arithmetic, multiply] = SHEET.groups;
+  const add = arithmetic?.instructions[0];
+  const mul = multiply?.instructions[0];
+
+  function finds(searchText: string, query: string): boolean {
+    return matchesTerms(searchText, queryTerms(query));
+  }
+
+  it('pliega mayúsculas y tildes', () => {
+    expect(foldText('División SIN Signo')).toBe('division sin signo');
+    expect(queryTerms('  Multiplicación   rd ')).toEqual(['multiplicacion', 'rd']);
+  });
+
+  it('una búsqueda vacía lo deja todo', () => {
+    expect(queryTerms('   ')).toEqual([]);
+    expect(matchesTerms('lo que sea', [])).toBe(true);
+  });
+
+  it('encuentra una instrucción por mnemónico, qué hace, operación o formato', () => {
+    if (add === undefined || mul === undefined) {
+      throw new Error('faltan instrucciones de prueba');
+    }
+    const text = instructionSearchText(add);
+    expect(finds(text, 'ADD')).toBe(true);
+    expect(finds(text, 'suma')).toBe(true);
+    expect(finds(text, 'rs1 + rs2')).toBe(true);
+    expect(finds(text, 'formato r')).toBe(true);
+    expect(finds(text, 'formato i')).toBe(false);
+    expect(finds(instructionSearchText(mul), 'extensión M')).toBe(true);
+    expect(finds(text, 'extension m')).toBe(false);
+  });
+
+  it('exige todas las palabras, en cualquier orden', () => {
+    if (add === undefined) {
+      throw new Error('falta add');
+    }
+    const text = instructionSearchText(add);
+    expect(finds(text, 'rs2 suma')).toBe(true);
+    expect(finds(text, 'suma resta')).toBe(false);
+  });
+
+  it('busca en pseudoinstrucciones por su expansión, y en directivas, ecalls y registros', () => {
+    const [nop] = SHEET.pseudo_instructions;
+    const [text] = SHEET.directives;
+    const [exit] = SHEET.syscalls;
+    const [zero] = SHEET.registers;
+    if (nop === undefined || text === undefined || exit === undefined || zero === undefined) {
+      throw new Error('faltan entradas de prueba');
+    }
+    expect(finds(pseudoSearchText(nop), 'addi')).toBe(true);
+    expect(finds(directiveSearchText(text), 'código')).toBe(true);
+    expect(finds(syscallSearchText(exit), 'a7 = 10')).toBe(true);
+    expect(finds(syscallSearchText(exit), 'salir')).toBe(true);
+    expect(finds(registerSearchText(zero), 'cero')).toBe(true);
+    expect(finds(registerSearchText(zero), 'x0')).toBe(true);
+  });
+
+  it('resume el resultado', () => {
+    expect(searchSummary('', 80)).toBe('');
+    expect(searchSummary(' xyz ', 0)).toBe('Nada coincide con «xyz»');
+    expect(searchSummary('add', 1)).toBe('1 coincidencia');
+    expect(searchSummary('a', 7)).toBe('7 coincidencias');
   });
 });
