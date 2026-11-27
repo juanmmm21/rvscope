@@ -82,6 +82,15 @@ export type InstructionGroupId =
 
 export type InstructionFormat = 'R' | 'I' | 'S' | 'B' | 'U' | 'J';
 
+// Campo de bits de una instrucción; `value` es el valor fijo que la identifica (opcode,
+// funct3…) o `null` si lo pone el programa.
+export interface EncodedField {
+  readonly name: string;
+  readonly high: number;
+  readonly low: number;
+  readonly value: number | null;
+}
+
 export interface CheatInstruction {
   readonly name: string;
   readonly syntax: string;
@@ -89,6 +98,10 @@ export interface CheatInstruction {
   readonly operation: string;
   readonly format: InstructionFormat;
   readonly extension: 'I' | 'M';
+  // Del bit 31 al 0, sin huecos.
+  readonly fields: readonly EncodedField[];
+  readonly example: string;
+  readonly example_word: number | null;
 }
 
 export interface CheatGroup {

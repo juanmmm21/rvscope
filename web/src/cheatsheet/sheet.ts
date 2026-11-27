@@ -1,5 +1,6 @@
 import type {
   CheatInstruction,
+  EncodedField,
   CheatSheet,
   DirectiveInfo,
   PseudoInfo,
@@ -111,4 +112,41 @@ export function syscallSignature(info: SyscallInfo): string {
 // línea se lee mejor que una sola línea larga.
 export function expansionLines(pseudo: PseudoInfo): string[] {
   return pseudo.expansion.split(/\s+·\s+o bien\s+·\s+/u);
+}
+
+// Un campo de la ficha tal como se pinta: su tramo de bits, si es fijo y sus bits en el ejemplo.
+export interface FieldCell {
+  readonly name: string;
+  readonly range: string;
+  readonly width: number;
+  readonly fixed: boolean;
+  // Bits del campo en la palabra del ejemplo; si no la hay, los del valor fijo o `null`.
+  readonly bits: string | null;
+}
+
+export function fieldCells(instruction: CheatInstruction): FieldCell[] {
+  return instruction.fields.map((field) => {
+    const width = field.high - field.low + 1;
+    return {
+      name: field.name,
+      range:
+        field.high === field.low
+          ? String(field.high)
+          : `${String(field.high)}–${String(field.low)}`,
+      width,
+      fixed: field.value !== null,
+      bits: fieldBits(field, width, instruction.example_word),
+    };
+  });
+}
+
+function fieldBits(field: EncodedField, width: number, word: number | null): string | null {
+  // Con desplazamiento sin signo: la palabra llega como número de 32 bits sin signo y un `>>`
+  // arrastraría el bit 31 como signo.
+  const value = word !== null ? (word >>> field.low) % 2 ** width : field.value;
+  return value === null ? null : value.toString(2).padStart(width, '0');
+}
+
+export function hexWord(word: number): string {
+  return `0x${(word >>> 0).toString(16).padStart(8, '0')}`;
 }

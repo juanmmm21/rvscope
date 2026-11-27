@@ -1,6 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import type { CheatSheet, PseudoInfo, SyscallInfo } from '../core';
-import { expansionLines, saverLabel, sheetSections, syscallSignature } from './sheet';
+import type { CheatInstruction, CheatSheet, EncodedField, PseudoInfo, SyscallInfo } from '../core';
+import {
+  expansionLines,
+  fieldCells,
+  hexWord,
+  saverLabel,
+  sheetSections,
+  syscallSignature,
+} from './sheet';
+
+const R_FIELDS = (funct7: number): EncodedField[] => [
+  { name: 'funct7', high: 31, low: 25, value: funct7 },
+  { name: 'rs2', high: 24, low: 20, value: null },
+  { name: 'rs1', high: 19, low: 15, value: null },
+  { name: 'funct3', high: 14, low: 12, value: 0 },
+  { name: 'rd', high: 11, low: 7, value: null },
+  { name: 'opcode', high: 6, low: 0, value: 0b0110011 },
+];
 
 const SHEET: CheatSheet = {
   groups: [
@@ -15,6 +31,9 @@ const SHEET: CheatSheet = {
           operation: 'rd = rs1 + rs2',
           format: 'R',
           extension: 'I',
+          fields: R_FIELDS(0),
+          example: 'add a0, a0, a1',
+          example_word: 0x00b50533,
         },
       ],
     },
@@ -29,6 +48,9 @@ const SHEET: CheatSheet = {
           operation: 'rd = (rs1 * rs2)[31:0]',
           format: 'R',
           extension: 'M',
+          fields: R_FIELDS(1),
+          example: 'mul a0, a0, a1',
+          example_word: 0x02b50533,
         },
       ],
     },
@@ -129,5 +151,57 @@ describe('saverLabel', () => {
     expect(saverLabel('caller')).toBe('lo guarda quien llama');
     expect(saverLabel('callee')).toBe('lo guarda la función');
     expect(saverLabel('none')).toBe('—');
+  });
+});
+
+describe('fieldCells', () => {
+  // addi sp, sp, -16: el inmediato negativo deja el bit 31 a uno.
+  const addi: CheatInstruction = {
+    name: 'addi',
+    syntax: 'addi rd, rs1, imm',
+    summary: 'Suma un inmediato',
+    operation: 'rd = rs1 + imm',
+    format: 'I',
+    extension: 'I',
+    fields: [
+      { name: 'imm[11:0]', high: 31, low: 20, value: null },
+      { name: 'rs1', high: 19, low: 15, value: null },
+      { name: 'funct3', high: 14, low: 12, value: 0 },
+      { name: 'rd', high: 11, low: 7, value: null },
+      { name: 'opcode', high: 6, low: 0, value: 0b0010011 },
+    ],
+    example: 'addi sp, sp, -16',
+    example_word: 0xff010113,
+  };
+
+  it('parte la palabra del ejemplo campo a campo', () => {
+    expect(fieldCells(addi)).toEqual([
+      { name: 'imm[11:0]', range: '31–20', width: 12, fixed: false, bits: '111111110000' },
+      { name: 'rs1', range: '19–15', width: 5, fixed: false, bits: '00010' },
+      { name: 'funct3', range: '14–12', width: 3, fixed: true, bits: '000' },
+      { name: 'rd', range: '11–7', width: 5, fixed: false, bits: '00010' },
+      { name: 'opcode', range: '6–0', width: 7, fixed: true, bits: '0010011' },
+    ]);
+  });
+
+  it('sin palabra de ejemplo enseña solo los bits fijos', () => {
+    const cells = fieldCells({ ...addi, example_word: null });
+    expect(cells.map((cell) => cell.bits)).toEqual([null, null, '000', null, '0010011']);
+  });
+
+  it('un campo de un bit se nombra con un solo número', () => {
+    const cells = fieldCells({
+      ...addi,
+      fields: [{ name: 'b', high: 31, low: 31, value: 1 }],
+      example_word: null,
+    });
+    expect(cells[0]?.range).toBe('31');
+  });
+});
+
+describe('hexWord', () => {
+  it('escribe la palabra en hexadecimal con ocho cifras', () => {
+    expect(hexWord(0xff010113)).toBe('0xff010113');
+    expect(hexWord(0x73)).toBe('0x00000073');
   });
 });
