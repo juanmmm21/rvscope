@@ -181,6 +181,8 @@ function findControls(): Controls {
       title: element('#cheatsheet-title', HTMLElement),
       close: element('#cheatsheet-close', HTMLButtonElement),
       nav: element('#cheatsheet-nav', HTMLElement),
+      search: element('#cheatsheet-search', HTMLInputElement),
+      searchStatus: element('#cheatsheet-search-status', HTMLElement),
       body: element('#cheatsheet-body', HTMLElement),
     },
   };

@@ -1,10 +1,19 @@
 import type { CheatSheet, CheatInstruction, PseudoInfo, RegisterInfo } from '../core';
 import {
+  directiveSearchText,
   expansionLines,
   fieldCells,
+  foldText,
   hexWord,
+  instructionSearchText,
+  matchesTerms,
+  pseudoSearchText,
+  queryTerms,
+  registerSearchText,
   saverLabel,
+  searchSummary,
   sheetSections,
+  syscallSearchText,
   syscallSignature,
   type SheetSection,
 } from './sheet';
@@ -15,7 +24,22 @@ export interface CheatSheetElements {
   readonly title: HTMLElement;
   readonly close: HTMLButtonElement;
   readonly nav: HTMLElement;
+  readonly search: HTMLInputElement;
+  readonly searchStatus: HTMLElement;
   readonly body: HTMLElement;
+}
+
+// Una fila que el buscador puede esconder, con su texto ya plegado.
+interface SearchRow {
+  readonly element: HTMLElement;
+  readonly text: string;
+}
+
+// Una sección con sus filas y su enlace del índice, que se esconden si no queda ninguna.
+interface SearchSection {
+  readonly element: HTMLElement;
+  readonly link: HTMLElement;
+  readonly rows: readonly SearchRow[];
 }
 
 // Panel lateral con la chuleta. Se superpone a la derecha en vez de ocupar una columna para no
@@ -25,12 +49,36 @@ export class CheatSheetPanel {
   readonly #elements: CheatSheetElements;
   // Dónde estaba el foco al abrir, para devolverlo al cerrar.
   #returnFocus: HTMLElement | null = null;
+  readonly #sections: readonly SearchSection[];
 
   constructor(elements: CheatSheetElements, sheet: CheatSheet) {
     this.#elements = elements;
     const sections = sheetSections(sheet);
-    elements.nav.replaceChildren(sectionIndex(sections, elements.body));
-    elements.body.replaceChildren(...sections.map(renderSection));
+    const index = sectionIndex(sections, elements.body);
+    elements.nav.replaceChildren(index.list);
+    const rendered = sections.map(renderSection);
+    elements.body.replaceChildren(...rendered.map((section) => section.element));
+    this.#sections = rendered.map((section, position) => {
+      const link = index.items[position];
+      if (link === undefined) {
+        throw new Error('el índice de la chuleta no cuadra con sus secciones');
+      }
+      return { ...section, link };
+    });
+    elements.search.addEventListener('input', () => {
+      this.#filter();
+    });
+    elements.search.addEventListener('keydown', (event) => {
+      // Escape con texto solo borra la búsqueda; con el buscador vacío cierra el panel.
+      if (event.key === 'Escape' && elements.search.value !== '') {
+        event.preventDefault();
+        event.stopPropagation();
+        this.search('');
+      } else if (event.key === 'Enter') {
+        event.preventDefault();
+        this.#focusFirstResult();
+      }
+    });
     elements.toggle.addEventListener('click', () => {
       this.toggle();
     });
@@ -43,6 +91,43 @@ export class CheatSheetPanel {
         this.close();
       }
     });
+  }
+
+  // Filtra la chuleta como si se hubiera escrito `query` en el buscador.
+  search(query: string): void {
+    this.#elements.search.value = query;
+    this.#filter();
+  }
+
+  #filter(): void {
+    const query = this.#elements.search.value;
+    const terms = queryTerms(query);
+    let matches = 0;
+    for (const section of this.#sections) {
+      let visible = 0;
+      for (const row of section.rows) {
+        const show = matchesTerms(row.text, terms);
+        row.element.hidden = !show;
+        if (show) {
+          visible += 1;
+        }
+      }
+      section.element.hidden = visible === 0;
+      section.link.hidden = visible === 0;
+      matches += visible;
+    }
+    this.#elements.searchStatus.textContent = searchSummary(query, matches);
+    this.#elements.body.scrollTop = 0;
+  }
+
+  // Enter en el buscador lleva a la primera instrucción que quede (su botón abre la ficha);
+  // si solo quedan filas sin botón, al cuerpo, que se desplaza con el teclado.
+  #focusFirstResult(): void {
+    const { body } = this.#elements;
+    const first = body.querySelector<HTMLElement>(
+      '.cs-section:not([hidden]) .cs-entry:not([hidden]) .cs-open',
+    );
+    (first ?? body).focus();
   }
 
   get isOpen(): boolean {
@@ -89,8 +174,12 @@ export class CheatSheetPanel {
   }
 }
 
-function sectionIndex(sections: readonly SheetSection[], body: HTMLElement): HTMLElement {
+function sectionIndex(
+  sections: readonly SheetSection[],
+  body: HTMLElement,
+): { list: HTMLElement; items: HTMLElement[] } {
   const list = document.createElement('ul');
+  const items: HTMLElement[] = [];
   for (const section of sections) {
     const item = document.createElement('li');
     const link = document.createElement('a');
@@ -108,11 +197,12 @@ function sectionIndex(sections: readonly SheetSection[], body: HTMLElement): HTM
     });
     item.append(link);
     list.append(item);
+    items.push(item);
   }
-  return list;
+  return { list, items };
 }
 
-function renderSection(section: SheetSection): HTMLElement {
+function renderSection(section: SheetSection): Omit<SearchSection, 'link'> {
   const element = document.createElement('section');
   element.className = 'cs-section';
   element.dataset.kind = section.kind;
@@ -123,38 +213,49 @@ function renderSection(section: SheetSection): HTMLElement {
   heading.textContent = section.title;
   element.setAttribute('aria-labelledby', section.id);
   element.append(heading);
+  let rows: SearchRow[];
   switch (section.kind) {
     case 'instructions':
-      element.append(entryList(section.entries.map(instructionEntry)));
+      rows = section.entries.map((instruction) => ({
+        element: instructionEntry(instruction),
+        text: instructionSearchText(instruction),
+      }));
       break;
     case 'pseudo':
-      element.append(entryList(section.entries.map(pseudoEntry)));
+      rows = section.entries.map((pseudo) => ({
+        element: pseudoEntry(pseudo),
+        text: pseudoSearchText(pseudo),
+      }));
       break;
     case 'directives':
-      element.append(
-        entryList(
-          section.entries.map((directive) =>
-            entry(syntaxCode(directive.name, directive.syntax), null, [text(directive.summary)]),
-          ),
-        ),
-      );
+      rows = section.entries.map((directive) => ({
+        element: entry(syntaxCode(directive.name, directive.syntax), null, [
+          text(directive.summary),
+        ]),
+        text: directiveSearchText(directive),
+      }));
       break;
     case 'syscalls':
-      element.append(
-        entryList(
-          section.entries.map((info) =>
-            entry(code(syscallSignature(info), 'cs-syntax'), null, [
-              text(`${capitalize(info.name)}. ${info.description}`),
-            ]),
-          ),
-        ),
-      );
+      rows = section.entries.map((info) => ({
+        element: entry(code(syscallSignature(info), 'cs-syntax'), null, [
+          text(`${capitalize(info.name)}. ${info.description}`),
+        ]),
+        text: syscallSearchText(info),
+      }));
       break;
-    case 'registers':
-      element.append(registerTable(section.entries));
+    case 'registers': {
+      const table = registerTable(section.entries);
+      element.append(table.element);
+      rows = table.rows;
       break;
+    }
   }
-  return element;
+  if (section.kind !== 'registers') {
+    element.append(entryList(rows.map((row) => row.element)));
+  }
+  // El título del grupo también cuenta: «división» o «cargas» enseñan el grupo entero.
+  const title = foldText(section.title);
+  return { element, rows: rows.map((row) => ({ ...row, text: `${title}\n${row.text}` })) };
 }
 
 // La fila de una instrucción se despliega en su ficha: el término es un botón para que se abra
@@ -278,7 +379,10 @@ function pseudoEntry(pseudo: PseudoInfo): HTMLElement {
   return entry(syntaxCode(pseudo.name, pseudo.syntax), null, [text(pseudo.summary), expansion]);
 }
 
-function registerTable(registers: readonly RegisterInfo[]): HTMLElement {
+function registerTable(registers: readonly RegisterInfo[]): {
+  element: HTMLElement;
+  rows: SearchRow[];
+} {
   const table = document.createElement('table');
   table.className = 'cs-registers';
   const head = table.createTHead().insertRow();
@@ -290,8 +394,10 @@ function registerTable(registers: readonly RegisterInfo[]): HTMLElement {
     head.append(cell);
   }
   const body = table.createTBody();
+  const rows: SearchRow[] = [];
   for (const register of registers) {
     const row = body.insertRow();
+    rows.push({ element: row, text: registerSearchText(register) });
     const name = document.createElement('th');
     name.scope = 'row';
     name.textContent = register.name;
@@ -301,7 +407,7 @@ function registerTable(registers: readonly RegisterInfo[]): HTMLElement {
     row.insertCell().textContent = saverLabel(register.saver);
     row.dataset.saver = register.saver;
   }
-  return table;
+  return { element: table, rows };
 }
 
 // Las entradas van en una lista de definiciones: el término es la sintaxis y la descripción lo
