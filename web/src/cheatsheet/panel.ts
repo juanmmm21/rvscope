@@ -1,6 +1,8 @@
 import type { CheatSheet, CheatInstruction, PseudoInfo, RegisterInfo } from '../core';
 import {
   expansionLines,
+  fieldCells,
+  hexWord,
   saverLabel,
   sheetSections,
   syscallSignature,
@@ -155,6 +157,8 @@ function renderSection(section: SheetSection): HTMLElement {
   return element;
 }
 
+// La fila de una instrucción se despliega en su ficha: el término es un botón para que se abra
+// con el teclado igual que con el ratón, y la ficha va en un `dd` más de la propia fila.
 function instructionEntry(instruction: CheatInstruction): HTMLElement {
   const tag = document.createElement('span');
   tag.className = 'cs-tag';
@@ -162,10 +166,103 @@ function instructionEntry(instruction: CheatInstruction): HTMLElement {
   hidden.className = 'visually-hidden';
   hidden.textContent = 'formato ';
   tag.append(hidden, instruction.format);
-  return entry(syntaxCode(instruction.name, instruction.syntax), tag, [
+
+  const card = instructionCard(instruction);
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'cs-open';
+  button.setAttribute('aria-expanded', 'false');
+  button.setAttribute('aria-controls', card.id);
+  button.append(syntaxCode(instruction.name, instruction.syntax), tag);
+  button.addEventListener('click', () => {
+    const expand = card.hidden;
+    card.hidden = !expand;
+    button.setAttribute('aria-expanded', String(expand));
+  });
+
+  const row = entry(button, null, [
     text(instruction.summary),
     code(instruction.operation, 'cs-operation'),
   ]);
+  row.dataset.instruction = instruction.name;
+  row.append(card);
+  return row;
+}
+
+function instructionCard(instruction: CheatInstruction): HTMLElement {
+  const card = document.createElement('dd');
+  card.id = `cs-card-${instruction.name.replace('.', '-')}`;
+  card.className = 'cs-card';
+  card.hidden = true;
+
+  const example = document.createElement('p');
+  example.className = 'cs-example';
+  const label = document.createElement('span');
+  label.className = 'label';
+  label.textContent = 'Ejemplo';
+  example.append(label, ' ', syntaxCode(instruction.name, instruction.example));
+  if (instruction.example_word !== null) {
+    example.append(' ', code(`→ ${hexWord(instruction.example_word)}`, 'cs-operation cs-word'));
+  }
+
+  const extension = instruction.extension === 'M' ? 'extensión M' : 'base RV32I';
+  const note = document.createElement('p');
+  note.className = 'cs-note';
+  note.textContent = `Formato ${instruction.format} · ${extension}. Sombreados, los campos fijos que identifican la instrucción; el resto lo pone el programa.`;
+
+  card.append(example, fieldTable(instruction), note);
+  return card;
+}
+
+// Una columna por campo, con el ancho proporcional a sus bits como en los diagramas de clase,
+// y en las filas el tramo de bits y lo que vale cada campo en el ejemplo. Sin desplazamiento
+// horizontal: en un móvil los nombres largos se parten antes que esconder la mitad de la palabra.
+function fieldTable(instruction: CheatInstruction): HTMLElement {
+  const cells = fieldCells(instruction);
+  const table = document.createElement('table');
+  table.className = 'cs-fields';
+  const caption = document.createElement('caption');
+  caption.className = 'visually-hidden';
+  caption.textContent = `Campos de bits de ${instruction.name}, con su valor en el ejemplo`;
+  table.append(caption);
+  const columns = document.createElement('colgroup');
+  for (const cell of cells) {
+    const column = document.createElement('col');
+    column.style.width = `${String((cell.width / 32) * 100)}%`;
+    columns.append(column);
+  }
+  table.append(columns);
+
+  const head = table.createTHead().insertRow();
+  for (const cell of cells) {
+    const th = document.createElement('th');
+    th.scope = 'col';
+    th.append(...breakableName(cell.name));
+    if (cell.fixed) {
+      th.className = 'cs-fixed';
+      const fixed = document.createElement('span');
+      fixed.className = 'visually-hidden';
+      fixed.textContent = ' (fijo)';
+      th.append(fixed);
+    }
+    head.append(th);
+  }
+  const body = table.createTBody();
+  const ranges = body.insertRow();
+  ranges.className = 'cs-range';
+  const bits = body.insertRow();
+  bits.className = 'cs-bits';
+  for (const cell of cells) {
+    const range = ranges.insertCell();
+    range.textContent = cell.range;
+    const value = bits.insertCell();
+    value.textContent = cell.bits ?? '·'.repeat(cell.width);
+    if (cell.fixed) {
+      range.className = 'cs-fixed';
+      value.className = 'cs-fixed';
+    }
+  }
+  return table;
 }
 
 function pseudoEntry(pseudo: PseudoInfo): HTMLElement {
@@ -245,6 +342,16 @@ function syntaxCode(name: string, syntax: string): HTMLElement {
     element.append(rest);
   }
   return element;
+}
+
+// Los nombres de los inmediatos partidos (`imm[12|10:5]`) no caben en una columna estrecha: se
+// deja partirlos tras «|» en vez de en cualquier letra.
+function breakableName(name: string): Node[] {
+  return name
+    .split('|')
+    .flatMap((part, index) =>
+      index === 0 ? [text(part)] : [text('|'), document.createElement('wbr'), text(part)],
+    );
 }
 
 function code(content: string, className: string): HTMLElement {
