@@ -149,6 +149,25 @@ fn every_pseudo_instruction_example_assembles() {
     }
 }
 
+// El ejemplo de la ficha ensambla a esa misma instrucción, sin pasar por una pseudo, y su
+// palabra lleva los bits fijos que la ficha dice.
+#[test]
+fn every_instruction_example_assembles_to_its_fixed_bits() {
+    for spec in &INSTRUCTIONS {
+        let source = format!("{}\nlabel: nop\n", spec.example());
+        let program = ok(&source);
+        let first = &program.listing[0];
+        assert_eq!(first.instruction.mnemonic, spec.mnemonic, "{source}");
+        assert_eq!(first.pseudo, None, "{source}");
+        for field in spec.fields() {
+            if let Some(value) = field.value {
+                let bits = (first.word >> field.low) & ((1u32 << field.width()) - 1);
+                assert_eq!(bits, value, "{} {}", spec.name, field.name);
+            }
+        }
+    }
+}
+
 #[test]
 fn every_directive_example_assembles() {
     let mut names: Vec<&str> = DIRECTIVES.iter().map(|spec| spec.name).collect();

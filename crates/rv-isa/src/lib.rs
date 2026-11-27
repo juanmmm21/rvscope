@@ -5,12 +5,14 @@
 
 mod format;
 mod instruction;
+mod layout;
 mod pseudo;
 mod register;
 mod table;
 
 pub use format::{BitField, Format};
 pub use instruction::{DecodeError, EncodeError, Instruction, fence_set};
+pub use layout::EncodedField;
 pub use pseudo::{PSEUDO_INSTRUCTIONS, PseudoSpec};
 pub use register::{REGISTERS, Reg, RegisterInfo, RegisterStyle, Saver};
 pub use table::{
