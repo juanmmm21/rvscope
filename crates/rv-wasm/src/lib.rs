@@ -5,6 +5,7 @@
 //! objetos las describe a mano `web/src/core.ts`: si cambia un `Serialize` de `session`, cambia
 //! también allí.
 
+pub mod cheatsheet;
 pub mod session;
 
 use serde::Serialize;
@@ -37,6 +38,13 @@ pub fn registers() -> Result<JsValue, JsError> {
 #[wasm_bindgen]
 pub fn vocabulary() -> Result<JsValue, JsError> {
     to_js(&Session::vocabulary())
+}
+
+/// Contenido de la chuleta (`CheatSheet`): instrucciones por grupo, pseudoinstrucciones,
+/// directivas, ecalls y registros, sacado de las mismas tablas que usa el ensamblador.
+#[wasm_bindgen(js_name = cheatSheet)]
+pub fn cheat_sheet() -> Result<JsValue, JsError> {
+    to_js(&cheatsheet::cheat_sheet())
 }
 
 /// `None` se convierte en `null` y los mapas en objetos planos, como en JSON: así los tipos
