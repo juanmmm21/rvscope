@@ -225,3 +225,69 @@ test('cada instrucción se despliega en su ficha con los campos de bits y un eje
     '1110011',
   ]);
 });
+
+test('el buscador filtra la chuleta sin tildes ni mayúsculas y lleva al resultado', async ({
+  page,
+}) => {
+  await open(page);
+  await page.locator('#cheatsheet-toggle').click();
+  const search = page.locator('#cheatsheet-search');
+  const status = page.locator('#cheatsheet-search-status');
+  const visibleSections = page.locator('.cs-section:visible .cs-heading');
+
+  await search.fill('SRAI');
+  await expect(page.locator('.cs-section[data-kind="instructions"] .cs-entry:visible')).toHaveCount(
+    1,
+  );
+  await expect(page.locator('.cs-entry[data-instruction="srai"]')).toBeVisible();
+  await expect(status).toContainText('coincidencia');
+  // Enter lleva a la primera instrucción y Enter otra vez abre su ficha.
+  await search.press('Enter');
+  const button = page.locator('.cs-entry[data-instruction="srai"] .cs-open');
+  await expect(button).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.cs-entry[data-instruction="srai"] .cs-card')).toBeVisible();
+
+  // Sin tildes: «division» encuentra la sección de la M, y el índice solo enseña lo que queda.
+  await search.fill('division');
+  await expect(visibleSections.first()).toHaveText('División (M)');
+  await expect(page.locator('#cheatsheet-nav li:visible')).toHaveText(
+    await visibleSections.allTextContents(),
+  );
+
+  // Pseudoinstrucciones por su expansión, registros por su uso, ecalls por su número.
+  await search.fill('pila');
+  await expect(page.locator('.cs-registers tbody tr:visible')).toContainText(['sp']);
+  await search.fill('a7 = 5');
+  await expect(visibleSections).toHaveText(['Llamadas al sistema (ecall)']);
+  await search.fill('jalr x0');
+  await expect(
+    page.locator('.cs-section[data-kind="pseudo"] .cs-entry:visible .cs-mnemonic'),
+  ).toContainText(['ret']);
+
+  await search.fill('zzz');
+  await expect(status).toHaveText('Nada coincide con «zzz»');
+  await expect(visibleSections).toHaveCount(0);
+  await expect(page.locator('#cheatsheet-nav li:visible')).toHaveCount(0);
+
+  // Escape con texto borra la búsqueda y deja el panel abierto; con el campo vacío lo cierra.
+  await search.press('Escape');
+  await expect(search).toHaveValue('');
+  await expect(status).toHaveText('');
+  await expect(page.locator('.cs-heading:visible')).toHaveText(SECTIONS);
+  await expect(page.locator('#cheatsheet')).toBeVisible();
+  await search.press('Escape');
+  await expect(page.locator('#cheatsheet')).toBeHidden();
+});
+
+for (const scheme of ['dark', 'light'] as const) {
+  test(`buscador sin fallos de accesibilidad en tema ${scheme}`, async ({ page }) => {
+    await page.emulateMedia({ colorScheme: scheme });
+    await open(page);
+    await page.locator('#cheatsheet-toggle').click();
+    await page.locator('#cheatsheet-search').fill('suma');
+    await expectAccessible(page, 'chuleta filtrada');
+    await page.locator('#cheatsheet-search').fill('');
+    await expectAccessible(page, 'buscador vacío con su texto de ayuda');
+  });
+}
