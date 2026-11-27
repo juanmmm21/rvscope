@@ -166,6 +166,30 @@
         ></div>
         <p id="datapath-caption" class="datapath-caption" aria-live="off"></p>
       </section>
+      <section id="pipeline" class="panel pipeline" aria-labelledby="pipeline-title" hidden>
+        <div class="panel-head">
+          <h2 class="label" id="pipeline-title">Tabla del pipeline</h2>
+          <p class="datapath-legend label">
+            <span class="pt-sample" data-state="stalled">ID</span> retenida ·
+            <span class="pt-sample" data-state="flushed">IF</span> vaciada · ←M / ←W operando
+            adelantado desde EX/MEM / MEM/WB
+          </p>
+        </div>
+        <div
+          id="pipeline-scroll"
+          class="pipeline-scroll"
+          tabindex="0"
+          role="group"
+          aria-label="Tabla del pipeline (se desplaza en horizontal)"
+        >
+          <table
+            id="pipeline-table"
+            class="pipeline-table"
+            aria-describedby="pipeline-caption"
+          ></table>
+        </div>
+        <p id="pipeline-caption" class="datapath-caption" aria-live="off"></p>
+      </section>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>

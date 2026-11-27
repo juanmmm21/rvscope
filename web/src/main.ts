@@ -8,9 +8,11 @@ import {
   type Machine,
   type ModelInfo,
   type RunStop,
+  type PipelineTable,
   type Snapshot,
 } from './core';
 import { DatapathPanel, type DatapathElements } from './datapath/panel';
+import { PipelineTablePanel, type PipelineTableElements } from './pipeline/panel';
 import { createEditor, type SourceEditor } from './editor/editor';
 import { MemoryPanel, RegisterPanel, radioGroup, type MemoryElements } from './inspect/panels';
 import { breakpointAddresses, executionLocation, sourceMap, type SourceMap } from './run/location';
@@ -126,6 +128,7 @@ interface Controls {
   readonly consoleClose: HTMLButtonElement;
   readonly assemblyStatus: HTMLElement;
   readonly datapath: DatapathElements;
+  readonly pipeline: PipelineTableElements;
 }
 
 function findControls(): Controls {
@@ -164,6 +167,12 @@ function findControls(): Controls {
       figure: element('#datapath-figure', HTMLElement),
       caption: element('#datapath-caption', HTMLElement),
     },
+    pipeline: {
+      section: element('#pipeline', HTMLElement),
+      scroller: element('#pipeline-scroll', HTMLElement),
+      table: element('#pipeline-table', HTMLTableElement),
+      caption: element('#pipeline-caption', HTMLElement),
+    },
   };
 }
 
@@ -176,6 +185,7 @@ class Workbench {
   readonly #registers: RegisterPanel;
   readonly #memory: MemoryPanel;
   readonly #datapath: DatapathPanel;
+  readonly #pipeline: PipelineTablePanel;
   // Etiquetas del último ensamblado correcto, para «Ir a» en la memoria.
   #labels: readonly Label[] = [];
   // Listado del último ensamblado correcto; `null` si hay errores o se editó después.
@@ -197,6 +207,7 @@ class Workbench {
       core.registers,
     );
     this.#datapath = new DatapathPanel(this.#ui.datapath, core.registers);
+    this.#pipeline = new PipelineTablePanel(this.#ui.pipeline, core.registers);
     this.#memory = new MemoryPanel(this.#ui.memory, (error) => {
       this.#fail(error);
     });
@@ -272,11 +283,26 @@ class Workbench {
     this.#ui.modelNote.dataset.warning = String(!model.equivalent);
   }
 
+  // Ruta de datos y tabla del pipeline. La tabla se pide al núcleo aparte y solo si el modelo
+  // la enseña: con el de un ciclo el panel está oculto.
   #renderDatapath(snapshot: Snapshot | null): void {
     const model = this.#currentModel();
-    if (model !== undefined) {
-      this.#datapath.render(model, snapshot);
+    if (model === undefined) {
+      return;
     }
+    this.#datapath.render(model, snapshot);
+    if (snapshot === null || !model.pipelined) {
+      this.#pipeline.render(model, null);
+      return;
+    }
+    let table: PipelineTable;
+    try {
+      table = this.#machine.pipelineTable();
+    } catch (error: unknown) {
+      this.#fail(error);
+      return;
+    }
+    this.#pipeline.render(model, table);
   }
 
   // Cambiar de procesador empieza de cero con el mismo programa; los puntos de parada viven en
