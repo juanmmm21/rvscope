@@ -9,8 +9,8 @@ use std::path::Path;
 
 use rv_asm::{Layout, Program, assemble, assemble_with};
 use rv_core::{
-    AluFunction, DualIssue, FiveStage, Hazards, Operation, PcSource, PipelineView, Processor,
-    SingleCycle, Slot, SlotState, Stage, Trap, Wires,
+    AluFunction, DualIssue, FiveStage, Hazards, Operation, PcSource, PipelineTrace, PipelineView,
+    Processor, SingleCycle, Slot, SlotState, Stage, Trap, Wires,
 };
 
 type Factory = fn(&Program) -> Box<dyn Processor>;
@@ -140,7 +140,124 @@ fn check(name: &str, program: &Program, factory: Factory) {
     let stats = cpu.stats();
     assert_eq!(stats.retired, reference.stats().retired, "{name}");
     assert_eq!(stats.flushed, flushed, "{name}: vaciados");
+    check_trace(name, &cycles, stats.retired);
     assert_eq!(cpu.state(), reference.state(), "{name}");
+}
+
+fn stage_index(stage: Stage) -> usize {
+    Stage::PIPELINE
+        .iter()
+        .position(|&seen| seen == stage)
+        .unwrap_or(0)
+}
+
+/// La tabla del pipeline sigue bien a cada instrucción: cada hueco de cada vista está en
+/// exactamente una fila con su misma dirección y estado, una fila avanza como mucho una etapa
+/// por ciclo y solo se queda en la misma si estaba esperando, y las filas que acaban en la
+/// última etapa sin fallar son justo las retiradas.
+fn check_trace(name: &str, cycles: &[(Vec<rv_core::Retired>, PipelineView)], retired: u64) {
+    let mut trace = PipelineTrace::new(u64::MAX);
+    for (index, (_, view)) in cycles.iter().enumerate() {
+        trace.record(index as u64 + 1, view);
+    }
+    let rows: Vec<_> = trace.rows().collect();
+    for (index, (_, view)) in cycles.iter().enumerate() {
+        let cycle = index as u64 + 1;
+        for (stage, lane, slot) in view.slots() {
+            let found: Vec<_> = rows
+                .iter()
+                .filter_map(|row| {
+                    row.cells
+                        .iter()
+                        .find(|cell| {
+                            cell.cycle == cycle
+                                && cell.stage == stage
+                                && usize::from(cell.lane) == lane
+                        })
+                        .map(|cell| (row.pc, cell.state))
+                })
+                .collect();
+            assert_eq!(
+                found,
+                [(slot.pc, slot.state)],
+                "{name}: ciclo {cycle}, {stage:?} vía {lane}"
+            );
+        }
+    }
+    let mut finished = 0;
+    for row in &rows {
+        for pair in row.cells.windows(2) {
+            let (before, after) = (pair[0], pair[1]);
+            assert_eq!(after.cycle, before.cycle + 1, "{name}: fila {}", row.id);
+            let advance = stage_index(after.stage) as i64 - stage_index(before.stage) as i64;
+            assert!(
+                advance == 1 || (advance == 0 && before.state == SlotState::Stalled),
+                "{name}: fila {} de {:?} a {:?}",
+                row.id,
+                before,
+                after
+            );
+            assert_ne!(
+                before.state,
+                SlotState::Flushed,
+                "{name}: vaciada que sigue"
+            );
+        }
+        // Ninguna fila se parte: todas empiezan al buscarse y acaban retiradas, vaciadas, con
+        // un fallo o cuando el procesador se para.
+        let first = row.cells.first().unwrap();
+        let first_stage = cycles[first.cycle as usize - 1].1.stages[0].stage;
+        assert_eq!(first.stage, first_stage, "{name}: fila {} partida", row.id);
+        let last = row.cells.last().unwrap();
+        let final_stage = cycles[last.cycle as usize - 1]
+            .1
+            .stages
+            .last()
+            .unwrap()
+            .stage;
+        if last.stage == final_stage && last.state == SlotState::Active && !last.trap {
+            finished += 1;
+        } else {
+            assert!(
+                last.state == SlotState::Flushed
+                    || last.trap
+                    || last.cycle + 1 >= cycles.len() as u64,
+                "{name}: fila {} sin terminar en el ciclo {}",
+                row.id,
+                last.cycle
+            );
+        }
+    }
+    // La `ecall` de salida se retira con la parada puesta: no cuenta como fallo.
+    let exited = cycles.last().is_some_and(|(_, view)| {
+        view.slots()
+            .any(|(_, _, slot)| matches!(slot.trap, Some(Trap::Exited { .. })))
+    });
+    assert_eq!(
+        finished + u64::from(exited),
+        retired,
+        "{name}: retiradas en la tabla"
+    );
+}
+
+#[test]
+fn the_trace_follows_every_instruction_in_every_model() {
+    let models: [(&str, Factory); 2] = [
+        ("un ciclo", |program| {
+            Box::new(SingleCycle::new(program).unwrap())
+        }),
+        ("5 etapas sin riesgos", |program| {
+            Box::new(FiveStage::new(program, Hazards::Ignore).unwrap())
+        }),
+    ];
+    for source in [FACTORIAL, MIXED] {
+        let program = assemble(source).unwrap();
+        for (name, factory) in models {
+            let mut cpu = factory(&program);
+            let cycles = record(cpu.as_mut());
+            check_trace(name, &cycles, cpu.stats().retired);
+        }
+    }
 }
 
 #[test]

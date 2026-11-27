@@ -11,6 +11,7 @@ mod processor;
 mod single_cycle;
 mod state;
 mod syscall;
+mod trace;
 mod view;
 mod wires;
 
@@ -28,5 +29,6 @@ pub use processor::{DataAccess, Halt, Processor, RegisterWrite, Retired, RunOutc
 pub use single_cycle::SingleCycle;
 pub use state::{ArchState, Registers};
 pub use syscall::{Console, EcallEffect, SYSCALLS, SyscallInfo, SyscallKind, ecall};
+pub use trace::{PipelineTrace, TraceBypass, TraceCell, TraceRow};
 pub use view::{Control, Operand, PipelineView, Slot, SlotState, Stage, StageView, WriteSource};
 pub use wires::{AluFunction, AluInput, AluWires, PcSource, Wires};
