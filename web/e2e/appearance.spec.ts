@@ -82,7 +82,7 @@ test('el tema se puede fijar, se recuerda y vuelve al del sistema', async ({ pag
   expect(await background(page)).toBe('rgb(10, 11, 12)');
   await expect(page.getByRole('radio', { name: 'Sistema' })).toBeChecked();
 
-  await page.getByText('Claro', { exact: true }).click();
+  await page.locator('#theme').getByText('Claro', { exact: true }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   expect(await background(page)).toBe('rgb(241, 241, 236)');
 
@@ -92,7 +92,7 @@ test('el tema se puede fijar, se recuerda y vuelve al del sistema', async ({ pag
   await expect(page.getByRole('radio', { name: 'Claro' })).toBeChecked();
   expect(await background(page)).toBe('rgb(241, 241, 236)');
 
-  await page.getByText('Sistema', { exact: true }).click();
+  await page.locator('#theme').getByText('Sistema', { exact: true }).click();
   await expect(page.locator('html')).not.toHaveAttribute('data-theme');
   expect(await page.evaluate(() => localStorage.getItem('rvscope.theme'))).toBeNull();
   expect(await background(page)).toBe('rgb(10, 11, 12)');
@@ -141,6 +141,7 @@ test('toda la página se recorre con el teclado y el foco siempre se ve', async 
   // Un grupo de radios es una sola parada de Tab (las flechas eligen dentro).
   const expected = [
     'skip-link',
+    '#cheatsheet-toggle',
     'theme=system',
     '#model',
     '#assemble',
