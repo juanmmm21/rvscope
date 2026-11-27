@@ -26,6 +26,8 @@ import {
 } from './debug';
 import { toDiagnostics } from './diagnostics';
 import { listingRows, type ListingRow } from './listing';
+import type { ReferenceIndex } from './reference';
+import { operationAtCursor, referenceTooltips } from './referenceTooltip';
 import { riscvLanguage } from './riscv';
 
 export interface EditorOptions {
@@ -33,6 +35,8 @@ export interface EditorOptions {
   // Columna del desensamblado, a la derecha del editor y del mismo alto.
   readonly listingParent: HTMLElement;
   readonly vocabulary: Vocabulary;
+  // Fichas de la chuleta por mnemónico y directiva, para la ficha del editor.
+  readonly references: ReferenceIndex;
   readonly source: string;
   readonly onChange: (source: string) => void;
   readonly onBreakpointsChange: (lines: readonly number[]) => void;
@@ -45,6 +49,8 @@ export interface SourceEditor {
   breakpointLines(): number[];
   toggleBreakpointAtCursor(): void;
   showLocation(location: ExecutionLocation | null): void;
+  // Mnemónico o directiva en minúsculas bajo el cursor, si está en la posición de operación.
+  operationAtCursor(): string | null;
 }
 
 interface ListingState {
@@ -222,6 +228,7 @@ export function createEditor(options: EditorOptions): SourceEditor {
         listingField,
         listingColumn(options.listingParent),
         riscvLanguage(options.vocabulary),
+        referenceTooltips(options.references),
         syntaxHighlighting(highlightStyle),
         theme,
         // `tabindex` no añade una parada (ya es editable), pero hace que las herramientas de
@@ -256,5 +263,6 @@ export function createEditor(options: EditorOptions): SourceEditor {
     showLocation(location: ExecutionLocation | null): void {
       showLocation(view, location);
     },
+    operationAtCursor: () => operationAtCursor(view.state, options.references),
   };
 }

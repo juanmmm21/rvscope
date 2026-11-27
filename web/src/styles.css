@@ -1342,3 +1342,77 @@ kbd {
 .cs-registers td:last-child {
   color: var(--muted);
 }
+
+/* Fila a la que lleva F2 desde el editor cuando no tiene botón propio (pseudo y directivas). */
+.cs-entry:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Ficha del editor: lo mismo que la fila de la chuleta, en pequeño y sin la tabla de bits. */
+.rf-card {
+  max-width: min(28rem, 90vw);
+  padding: 0.5rem 0.7rem;
+  font-family: var(--font-sans);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.rf-card p {
+  margin: 0;
+}
+
+.rf-entry + .rf-entry {
+  margin-top: 0.45rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid var(--line);
+}
+
+.rf-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.rf-syntax,
+.rf-operation {
+  font-family: var(--font-mono);
+}
+
+.rf-mnemonic {
+  color: var(--syn-instruction);
+  font-weight: 500;
+}
+
+.rf-entry[data-kind='pseudo'] .rf-mnemonic {
+  color: var(--syn-pseudo);
+}
+
+.rf-entry[data-kind='directive'] .rf-mnemonic {
+  color: var(--syn-directive);
+}
+
+.rf-tag {
+  flex: none;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+}
+
+.rf-summary {
+  margin-top: 0.15rem;
+}
+
+.rf-operation,
+.rf-note,
+.rf-hint {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.rf-hint {
+  margin-top: 0.45rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--line);
+}
