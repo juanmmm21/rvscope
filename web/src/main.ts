@@ -15,6 +15,7 @@ import { CheatSheetPanel, type CheatSheetElements } from './cheatsheet/panel';
 import { DatapathPanel, type DatapathElements } from './datapath/panel';
 import { PipelineTablePanel, type PipelineTableElements } from './pipeline/panel';
 import { createEditor, type SourceEditor } from './editor/editor';
+import { referenceIndex } from './editor/reference';
 import { MemoryPanel, RegisterPanel, radioGroup, type MemoryElements } from './inspect/panels';
 import { breakpointAddresses, executionLocation, sourceMap, type SourceMap } from './run/location';
 import { Runner, browserScheduler } from './run/runner';
@@ -248,6 +249,7 @@ class Workbench {
       parent: element('#editor', HTMLElement),
       listingParent: element('#listing', HTMLElement),
       vocabulary: core.vocabulary,
+      references: referenceIndex(core.cheatSheet),
       source: factorialSource,
       onChange: () => {
         this.#sourceChanged();
@@ -385,6 +387,20 @@ class Workbench {
     );
   }
 
+  // Desde el editor con el cursor en una operación, F2 abre la chuleta en su ficha.
+  #toggleCheatSheet(): void {
+    if (this.#cheatSheet.isOpen) {
+      this.#cheatSheet.close();
+      return;
+    }
+    const name = this.#editor.view.hasFocus ? this.#editor.operationAtCursor() : null;
+    if (name === null) {
+      this.#cheatSheet.open();
+    } else {
+      this.#cheatSheet.reveal(name);
+    }
+  }
+
   #shortcut(event: KeyboardEvent): void {
     const mod = event.ctrlKey || event.metaKey;
     let action: (() => void) | null = null;
@@ -402,7 +418,7 @@ class Workbench {
           };
     } else if (event.key === 'F2' && !mod && !event.altKey && !event.shiftKey) {
       action = () => {
-        this.#cheatSheet.toggle();
+        this.#toggleCheatSheet();
       };
     } else if (event.key === 'Enter' && mod && !event.shiftKey && !event.altKey) {
       action = () => {

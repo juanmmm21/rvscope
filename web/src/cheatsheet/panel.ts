@@ -130,6 +130,29 @@ export class CheatSheetPanel {
     (first ?? body).focus();
   }
 
+  // Abre la chuleta en la entrada de `name` (instrucción, pseudoinstrucción o directiva): quita
+  // la búsqueda, despliega la ficha si es una instrucción y deja el foco en ella. La instrucción
+  // real va antes que la pseudoinstrucción del mismo nombre.
+  reveal(name: string): void {
+    this.open();
+    this.search('');
+    const { body } = this.#elements;
+    const row = body.querySelector<HTMLElement>(`.cs-entry[data-name="${CSS.escape(name)}"]`);
+    if (row === null) {
+      return;
+    }
+    const button = row.querySelector<HTMLButtonElement>('.cs-open');
+    if (button !== null && button.getAttribute('aria-expanded') !== 'true') {
+      button.click();
+    }
+    const target = button ?? row;
+    if (button === null) {
+      row.tabIndex = -1;
+    }
+    target.scrollIntoView({ block: 'start' });
+    target.focus({ preventScroll: true });
+  }
+
   get isOpen(): boolean {
     return !this.#elements.drawer.hidden;
   }
@@ -228,12 +251,13 @@ function renderSection(section: SheetSection): Omit<SearchSection, 'link'> {
       }));
       break;
     case 'directives':
-      rows = section.entries.map((directive) => ({
-        element: entry(syntaxCode(directive.name, directive.syntax), null, [
+      rows = section.entries.map((directive) => {
+        const row = entry(syntaxCode(directive.name, directive.syntax), null, [
           text(directive.summary),
-        ]),
-        text: directiveSearchText(directive),
-      }));
+        ]);
+        row.dataset.name = directive.name;
+        return { element: row, text: directiveSearchText(directive) };
+      });
       break;
     case 'syscalls':
       rows = section.entries.map((info) => ({
@@ -286,6 +310,7 @@ function instructionEntry(instruction: CheatInstruction): HTMLElement {
     code(instruction.operation, 'cs-operation'),
   ]);
   row.dataset.instruction = instruction.name;
+  row.dataset.name = instruction.name;
   row.append(card);
   return row;
 }
@@ -376,7 +401,12 @@ function pseudoEntry(pseudo: PseudoInfo): HTMLElement {
     }
     expansion.append(code(`→ ${line}`, 'cs-operation'));
   });
-  return entry(syntaxCode(pseudo.name, pseudo.syntax), null, [text(pseudo.summary), expansion]);
+  const row = entry(syntaxCode(pseudo.name, pseudo.syntax), null, [
+    text(pseudo.summary),
+    expansion,
+  ]);
+  row.dataset.name = pseudo.name;
+  return row;
 }
 
 function registerTable(registers: readonly RegisterInfo[]): {
