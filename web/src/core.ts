@@ -171,7 +171,7 @@ export interface Slot {
   readonly word: number | null;
   readonly text: string | null;
   readonly line: number | null;
-  readonly state: 'active' | 'stalled' | 'flushed';
+  readonly state: SlotState;
   readonly control: Control | null;
   readonly rs1: Operand | null;
   readonly rs2: Operand | null;
@@ -184,8 +184,12 @@ export interface Slot {
   readonly wires: Wires | null;
 }
 
+export type StageId = 'single' | 'if' | 'id' | 'ex' | 'mem' | 'wb';
+
+export type SlotState = 'active' | 'stalled' | 'flushed';
+
 export interface StageSnapshot {
-  readonly stage: 'single' | 'if' | 'id' | 'ex' | 'mem' | 'wb';
+  readonly stage: StageId;
   readonly name: string;
   readonly lanes: readonly (Slot | null)[];
 }
@@ -204,6 +208,39 @@ export interface Snapshot {
   readonly can_step_back: boolean;
   readonly cycle: number;
   readonly stages: readonly StageSnapshot[];
+}
+
+// Operando que llegó adelantado a EX (`rv_core::TraceBypass`).
+export interface TraceBypass {
+  readonly reg: number;
+  readonly from: Bypass;
+  readonly lane: number;
+}
+
+// Dónde estaba una instrucción en un ciclo (`rv_core::TraceCell`).
+export interface TraceCell {
+  readonly cycle: number;
+  readonly stage: StageId;
+  readonly lane: number;
+  readonly state: SlotState;
+  // `rs1` y `rs2`; solo en EX y solo si llegaron adelantados.
+  readonly bypasses: readonly [TraceBypass | null, TraceBypass | null];
+  readonly trap: boolean;
+}
+
+// Una instrucción dinámica con sus ciclos consecutivos dentro de la ventana.
+export interface TableRow {
+  readonly pc: number;
+  readonly text: string | null;
+  readonly line: number | null;
+  readonly cells: readonly TraceCell[];
+}
+
+// Tabla del pipeline de los últimos ciclos; los dos ciclos son 0 antes del primer paso.
+export interface PipelineTable {
+  readonly first_cycle: number;
+  readonly last_cycle: number;
+  readonly rows: readonly TableRow[];
 }
 
 export interface Region {
@@ -271,6 +308,10 @@ export class Machine {
 
   snapshot(): Snapshot {
     return this.#simulator.snapshot() as Snapshot;
+  }
+
+  pipelineTable(): PipelineTable {
+    return this.#simulator.pipelineTable() as PipelineTable;
   }
 }
 
