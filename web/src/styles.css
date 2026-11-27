@@ -1032,3 +1032,181 @@ kbd {
     transition: none;
   }
 }
+
+/* Chuleta: panel superpuesto a la derecha, sin sombra ni caja pesada; una línea fina lo separa
+   de la página. No es modal, así que no oscurece lo de debajo. */
+.cheatsheet:not([hidden]) {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  width: min(32rem, 100vw);
+  border-left: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.cheatsheet-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.cheatsheet-head h2 {
+  margin: 0;
+  font-weight: 400;
+}
+
+.cheatsheet-head h2:focus-visible,
+.cs-heading:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.cheatsheet-nav {
+  padding: 0.5rem 1.25rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.cheatsheet-nav ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.9rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cheatsheet-nav a {
+  color: var(--fg);
+  font-size: 0.8rem;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 0.2em;
+}
+
+.cheatsheet-nav a:hover {
+  text-decoration-color: currentColor;
+}
+
+.cheatsheet-nav a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.cheatsheet-body {
+  overflow-y: auto;
+  padding: 0.25rem 1.25rem 2rem;
+  overscroll-behavior: contain;
+}
+
+.cheatsheet-body:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.cs-heading {
+  margin: 1.25rem 0 0.4rem;
+  font-weight: 400;
+  scroll-margin-top: 0.5rem;
+}
+
+.cs-list {
+  margin: 0;
+}
+
+.cs-entry {
+  padding: 0.4rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.cs-entry dt {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.cs-entry dd {
+  margin: 0.1rem 0 0;
+  font-size: 0.85rem;
+}
+
+.cs-syntax,
+.cs-operation {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+
+.cs-syntax {
+  color: var(--syn-register);
+}
+
+.cs-mnemonic {
+  color: var(--syn-instruction);
+  font-weight: 500;
+}
+
+.cs-section[data-kind='pseudo'] .cs-mnemonic {
+  color: var(--syn-pseudo);
+}
+
+.cs-section[data-kind='directives'] .cs-mnemonic {
+  color: var(--syn-directive);
+}
+
+.cs-section[data-kind='syscalls'] .cs-syntax {
+  color: var(--fg);
+}
+
+.cs-operation,
+.cs-expansion {
+  color: var(--muted);
+}
+
+.cs-tag {
+  flex: none;
+  padding: 0 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+}
+
+.cs-registers {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.cs-registers th,
+.cs-registers td {
+  padding: 0.2rem 0.5rem 0.2rem 0;
+  border-top: 1px solid var(--line);
+  text-align: left;
+  vertical-align: baseline;
+}
+
+.cs-registers thead th {
+  border-top: none;
+  font-weight: 400;
+}
+
+.cs-registers tbody th,
+.cs-registers td:nth-child(2) {
+  font-family: var(--font-mono);
+  font-weight: 400;
+}
+
+.cs-registers td:nth-child(2) {
+  color: var(--syn-register);
+}
+
+.cs-registers td:last-child {
+  color: var(--muted);
+}

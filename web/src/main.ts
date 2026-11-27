@@ -11,6 +11,7 @@ import {
   type PipelineTable,
   type Snapshot,
 } from './core';
+import { CheatSheetPanel, type CheatSheetElements } from './cheatsheet/panel';
 import { DatapathPanel, type DatapathElements } from './datapath/panel';
 import { PipelineTablePanel, type PipelineTableElements } from './pipeline/panel';
 import { createEditor, type SourceEditor } from './editor/editor';
@@ -129,6 +130,7 @@ interface Controls {
   readonly assemblyStatus: HTMLElement;
   readonly datapath: DatapathElements;
   readonly pipeline: PipelineTableElements;
+  readonly cheatSheet: CheatSheetElements;
 }
 
 function findControls(): Controls {
@@ -173,6 +175,14 @@ function findControls(): Controls {
       table: element('#pipeline-table', HTMLTableElement),
       caption: element('#pipeline-caption', HTMLElement),
     },
+    cheatSheet: {
+      toggle: element('#cheatsheet-toggle', HTMLButtonElement),
+      drawer: element('#cheatsheet', HTMLElement),
+      title: element('#cheatsheet-title', HTMLElement),
+      close: element('#cheatsheet-close', HTMLButtonElement),
+      nav: element('#cheatsheet-nav', HTMLElement),
+      body: element('#cheatsheet-body', HTMLElement),
+    },
   };
 }
 
@@ -186,6 +196,7 @@ class Workbench {
   readonly #memory: MemoryPanel;
   readonly #datapath: DatapathPanel;
   readonly #pipeline: PipelineTablePanel;
+  readonly #cheatSheet: CheatSheetPanel;
   // Etiquetas del último ensamblado correcto, para «Ir a» en la memoria.
   #labels: readonly Label[] = [];
   // Listado del último ensamblado correcto; `null` si hay errores o se editó después.
@@ -208,6 +219,7 @@ class Workbench {
     );
     this.#datapath = new DatapathPanel(this.#ui.datapath, core.registers);
     this.#pipeline = new PipelineTablePanel(this.#ui.pipeline, core.registers);
+    this.#cheatSheet = new CheatSheetPanel(this.#ui.cheatSheet, core.cheatSheet);
     this.#memory = new MemoryPanel(this.#ui.memory, (error) => {
       this.#fail(error);
     });
@@ -386,6 +398,10 @@ class Workbench {
         : () => {
             this.#step();
           };
+    } else if (event.key === 'F2' && !mod && !event.altKey && !event.shiftKey) {
+      action = () => {
+        this.#cheatSheet.toggle();
+      };
     } else if (event.key === 'Enter' && mod && !event.shiftKey && !event.altKey) {
       action = () => {
         this.#toggleRun();

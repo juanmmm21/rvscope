@@ -24,6 +24,15 @@
     <header class="topbar">
       <span class="brand">rvscope</span>
       <div class="topbar-end">
+        <button
+          type="button"
+          id="cheatsheet-toggle"
+          aria-expanded="false"
+          aria-controls="cheatsheet"
+          aria-keyshortcuts="F2"
+        >
+          Chuleta
+        </button>
         <fieldset class="segmented" id="theme">
           <legend class="visually-hidden">Tema</legend>
         </fieldset>
@@ -78,8 +87,7 @@
             <kbd>F10</kbd> paso · <kbd>Mayús</kbd>+<kbd>F10</kbd> paso atrás · <kbd>Ctrl</kbd>+<kbd
               >Intro</kbd
             >
-            ejecutar o pausar · <kbd>Ctrl</kbd>+<kbd>S</kbd>
-            ensamblar
+            ejecutar o pausar · <kbd>Ctrl</kbd>+<kbd>S</kbd> ensamblar · <kbd>F2</kbd> chuleta
           </p>
         </section>
         <section class="panel memory" aria-labelledby="memory-title">
@@ -191,6 +199,20 @@
         <p id="pipeline-caption" class="datapath-caption" aria-live="off"></p>
       </section>
     </main>
+    <aside id="cheatsheet" class="cheatsheet" aria-labelledby="cheatsheet-title" hidden>
+      <div class="cheatsheet-head">
+        <h2 class="label" id="cheatsheet-title" tabindex="-1">Chuleta de RISC-V · RV32IM</h2>
+        <button type="button" id="cheatsheet-close" aria-keyshortcuts="Escape">Cerrar</button>
+      </div>
+      <nav id="cheatsheet-nav" class="cheatsheet-nav" aria-label="Secciones de la chuleta"></nav>
+      <div
+        id="cheatsheet-body"
+        class="cheatsheet-body"
+        tabindex="0"
+        role="group"
+        aria-label="Instrucciones, directivas, ecalls y registros"
+      ></div>
+    </aside>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
