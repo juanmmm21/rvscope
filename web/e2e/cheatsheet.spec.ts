@@ -23,6 +23,16 @@ async function open(page: Page): Promise<void> {
   await expect(page.locator('#assembly-status')).toContainText('ensamblado');
 }
 
+// Las fichas con los campos más enrevesados: inmediato partido, funct7 en un formato I,
+// funct12 fijo y los conjuntos de fence.
+const TRICKY_CARDS = ['sw', 'beq', 'jal', 'srai', 'ecall', 'fence'];
+
+async function openCards(page: Page, names: readonly string[]): Promise<void> {
+  for (const name of names) {
+    await page.locator(`.cs-entry[data-instruction="${name}"] .cs-open`).click();
+  }
+}
+
 async function expectAccessible(page: Page, context: string): Promise<void> {
   const result = await new AxeBuilder({ page })
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
@@ -67,7 +77,7 @@ test('la chuleta trae todas las instrucciones, pseudoinstrucciones, ecalls y reg
   await expect(page.locator('#cheatsheet-nav a')).toHaveText(SECTIONS);
   await expect(page.locator('.cs-heading')).toHaveText(SECTIONS);
   // RV32I (40) + M (8), cada una una sola vez.
-  const instructions = page.locator('.cs-section[data-kind="instructions"] .cs-mnemonic');
+  const instructions = page.locator('.cs-section[data-kind="instructions"] .cs-open .cs-mnemonic');
   await expect(instructions).toHaveCount(48);
   const names = await instructions.allTextContents();
   expect(new Set(names).size).toBe(48);
@@ -136,7 +146,8 @@ for (const scheme of ['dark', 'light'] as const) {
     await page.emulateMedia({ colorScheme: scheme });
     await open(page);
     await page.locator('#cheatsheet-toggle').click();
-    await expectAccessible(page, 'chuleta abierta');
+    await openCards(page, TRICKY_CARDS);
+    await expectAccessible(page, 'chuleta abierta con fichas');
   });
 }
 
@@ -144,6 +155,7 @@ test('en un móvil ocupa el ancho sin scroll horizontal', async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 780 });
   await open(page);
   await page.locator('#cheatsheet-toggle').click();
+  await openCards(page, TRICKY_CARDS);
   const box = await page.locator('#cheatsheet').boundingBox();
   expect(box).not.toBeNull();
   if (box !== null) {
@@ -156,4 +168,60 @@ test('en un móvil ocupa el ancho sin scroll horizontal', async ({ page }) => {
   });
   expect(overflow).toBe(0);
   await expectAccessible(page, 'chuleta en pantalla estrecha');
+});
+
+test('cada instrucción se despliega en su ficha con los campos de bits y un ejemplo', async ({
+  page,
+}) => {
+  await open(page);
+  await page.locator('#cheatsheet-toggle').click();
+  const rows = page.locator('.cs-section[data-kind="instructions"] .cs-entry');
+  await expect(rows.locator('.cs-open')).toHaveCount(48);
+  await expect(page.locator('.cs-card:visible')).toHaveCount(0);
+
+  const addi = page.locator('.cs-entry[data-instruction="addi"]');
+  const button = addi.locator('.cs-open');
+  await expect(button).toHaveAttribute('aria-expanded', 'false');
+  await button.click();
+  await expect(button).toHaveAttribute('aria-expanded', 'true');
+  const card = addi.locator('.cs-card');
+  await expect(card).toBeVisible();
+  await expect(card.locator('.cs-example')).toContainText('addi sp, sp, -16');
+  await expect(card.locator('.cs-example')).toContainText('0xff010113');
+  await expect(card.locator('thead th')).toHaveText([
+    'imm[11:0]',
+    'rs1',
+    'funct3 (fijo)',
+    'rd',
+    'opcode (fijo)',
+  ]);
+  await expect(card.locator('.cs-range td')).toHaveText(['31–20', '19–15', '14–12', '11–7', '6–0']);
+  await expect(card.locator('.cs-bits td')).toHaveText([
+    '111111110000',
+    '00010',
+    '000',
+    '00010',
+    '0010011',
+  ]);
+  await expect(card.locator('.cs-bits td.cs-fixed')).toHaveCount(2);
+
+  // Con el teclado se cierra igual, y abrir una no cierra las demás.
+  await button.focus();
+  await page.keyboard.press('Enter');
+  await expect(card).toBeHidden();
+  await openCards(page, ['srai', 'ecall']);
+  await expect(page.locator('.cs-card:visible')).toHaveCount(2);
+  await expect(page.locator('.cs-entry[data-instruction="srai"] thead th').first()).toHaveText(
+    'funct7 (fijo)',
+  );
+  await expect(page.locator('.cs-entry[data-instruction="srai"] .cs-bits td').first()).toHaveText(
+    '0100000',
+  );
+  await expect(page.locator('.cs-entry[data-instruction="ecall"] .cs-bits td')).toHaveText([
+    '000000000000',
+    '00000',
+    '000',
+    '00000',
+    '1110011',
+  ]);
 });
