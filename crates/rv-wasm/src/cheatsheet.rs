@@ -2,11 +2,11 @@
 //! simulador (`rv-isa`, `rv-asm` y las ecalls de `rv-core`), así que la chuleta no puede anunciar
 //! nada que rvscope no admita ni olvidarse de algo que sí admite.
 
-use rv_asm::{DIRECTIVES, DirectiveSpec};
+use rv_asm::{DIRECTIVES, DirectiveSpec, assemble};
 use rv_core::{SYSCALLS, SyscallInfo};
 use rv_isa::{
-    Extension, Format, Group, INSTRUCTIONS, PSEUDO_INSTRUCTIONS, PseudoSpec, REGISTERS,
-    RegisterInfo,
+    EncodedField, Extension, Format, Group, INSTRUCTIONS, InstructionSpec, PSEUDO_INSTRUCTIONS,
+    PseudoSpec, REGISTERS, RegisterInfo,
 };
 use serde::Serialize;
 
@@ -35,6 +35,11 @@ pub struct CheatInstruction {
     pub operation: &'static str,
     pub format: Format,
     pub extension: Extension,
+    /// Campos de bits del más alto al más bajo, con los valores fijos que la identifican.
+    pub fields: Vec<EncodedField>,
+    pub example: &'static str,
+    /// Palabra en que se ensambla `example`, para enseñar sus bits campo a campo.
+    pub example_word: Option<u32>,
 }
 
 pub fn cheat_sheet() -> CheatSheet {
@@ -46,14 +51,7 @@ pub fn cheat_sheet() -> CheatSheet {
             instructions: INSTRUCTIONS
                 .iter()
                 .filter(|spec| spec.group == group)
-                .map(|spec| CheatInstruction {
-                    name: spec.name,
-                    syntax: spec.syntax(),
-                    summary: spec.summary,
-                    operation: spec.operation,
-                    format: spec.format,
-                    extension: spec.extension,
-                })
+                .map(cheat_instruction)
                 .collect(),
         })
         .collect();
@@ -64,6 +62,32 @@ pub fn cheat_sheet() -> CheatSheet {
         syscalls: SYSCALLS,
         registers: &REGISTERS,
     }
+}
+
+fn cheat_instruction(spec: &'static InstructionSpec) -> CheatInstruction {
+    CheatInstruction {
+        name: spec.name,
+        syntax: spec.syntax(),
+        summary: spec.summary,
+        operation: spec.operation,
+        format: spec.format,
+        extension: spec.extension,
+        fields: spec.fields(),
+        example: spec.example(),
+        example_word: example_word(spec),
+    }
+}
+
+// El ejemplo se ensambla de verdad en vez de codificarse a mano: así la ficha enseña lo mismo
+// que saldría en el editor. Los saltos apuntan a `label`, que va justo detrás.
+fn example_word(spec: &InstructionSpec) -> Option<u32> {
+    let source = format!("{}\nlabel: nop\n", spec.example());
+    let program = assemble(&source).ok()?;
+    program
+        .listing
+        .first()
+        .filter(|entry| entry.instruction.mnemonic == spec.mnemonic)
+        .map(|entry| entry.word)
 }
 
 #[cfg(test)]
@@ -117,5 +141,38 @@ mod tests {
         assert_eq!(sheet.directives.len(), DIRECTIVES.len());
         assert_eq!(sheet.syscalls.len(), SYSCALLS.len());
         assert_eq!(sheet.registers.len(), 32);
+    }
+
+    #[test]
+    fn every_instruction_has_its_card() {
+        for group in cheat_sheet().groups {
+            for instruction in group.instructions {
+                assert!(
+                    instruction.example.starts_with(instruction.name),
+                    "{}",
+                    instruction.name
+                );
+                assert!(instruction.example_word.is_some(), "{}", instruction.name);
+                assert!(!instruction.fields.is_empty(), "{}", instruction.name);
+            }
+        }
+    }
+
+    #[test]
+    fn addi_card_shows_the_example_bits() {
+        let sheet = cheat_sheet();
+        let addi = sheet
+            .groups
+            .iter()
+            .flat_map(|group| &group.instructions)
+            .find(|instruction| instruction.name == "addi");
+        let Some(addi) = addi else {
+            panic!("falta addi");
+        };
+        assert_eq!(addi.example, "addi sp, sp, -16");
+        // imm = -16 (0xff0), rs1 = rd = x2, funct3 = 0, opcode = OP-IMM.
+        assert_eq!(addi.example_word, Some(0xff01_0113));
+        let names: Vec<&str> = addi.fields.iter().map(|field| field.name).collect();
+        assert_eq!(names, ["imm[11:0]", "rs1", "funct3", "rd", "opcode"]);
     }
 }
