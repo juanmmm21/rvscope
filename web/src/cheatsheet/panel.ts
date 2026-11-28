@@ -1,4 +1,6 @@
 import type { CheatSheet, CheatInstruction, PseudoInfo, RegisterInfo } from '../core';
+import { paperSheet } from './paper';
+import { renderPaper } from './paperView';
 import {
   directiveSearchText,
   expansionLines,
@@ -23,6 +25,9 @@ export interface CheatSheetElements {
   readonly drawer: HTMLElement;
   readonly title: HTMLElement;
   readonly close: HTMLButtonElement;
+  readonly print: HTMLButtonElement;
+  // Hoja imprimible, fuera del panel: al imprimir es lo único que sale.
+  readonly paper: HTMLElement;
   readonly nav: HTMLElement;
   readonly search: HTMLInputElement;
   readonly searchStatus: HTMLElement;
@@ -84,6 +89,12 @@ export class CheatSheetPanel {
     });
     elements.close.addEventListener('click', () => {
       this.close();
+    });
+    renderPaper(elements.paper, paperSheet(sheet));
+    // Imprimir la página entera no tendría sentido (el editor y los paneles no caben en papel),
+    // así que la hoja de impresión siempre es la chuleta, se pida con el botón o con Ctrl+P.
+    elements.print.addEventListener('click', () => {
+      window.print();
     });
     elements.drawer.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') {

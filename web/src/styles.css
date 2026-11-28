@@ -1416,3 +1416,149 @@ kbd {
   padding-top: 0.35rem;
   border-top: 1px solid var(--line);
 }
+
+.cheatsheet-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* Chuleta en papel: solo existe al imprimir. Una hoja A4 en blanco y negro, en tres columnas y
+   con letra pequeña, que es lo que cabe en el papel que se lleva a clase. Colores fijos y no los
+   del tema: en modo oscuro también tiene que salir negro sobre blanco. */
+.paper {
+  display: none;
+}
+
+@page {
+  size: A4;
+  margin: 8mm;
+}
+
+@media print {
+  body > :not(.paper) {
+    display: none !important;
+  }
+
+  body {
+    background: #fff;
+    color: #000;
+  }
+
+  .paper {
+    display: block;
+    columns: 3;
+    column-gap: 4mm;
+    column-rule: 0.2mm solid #999;
+    font-family: var(--font-sans);
+    font-size: 6.7pt;
+    line-height: 1.24;
+    color: #000;
+  }
+
+  .paper-title {
+    column-span: all;
+    margin: 0 0 1.5mm;
+    font-family: var(--font-mono);
+    font-size: 8pt;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .paper-formats {
+    column-span: all;
+    width: 100%;
+    margin-bottom: 2mm;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-family: var(--font-mono);
+    font-size: 5.6pt;
+    text-align: center;
+  }
+
+  .paper-formats caption {
+    margin-bottom: 0.5mm;
+    font-size: 5.6pt;
+    text-align: left;
+    text-transform: uppercase;
+  }
+
+  .paper-formats th {
+    width: 3mm;
+    font-weight: 600;
+  }
+
+  .paper-formats td {
+    padding: 0.2mm 0;
+    border: 0.2mm solid #000;
+  }
+
+  .paper-formats td span,
+  .paper-formats td small {
+    display: block;
+  }
+
+  .paper-formats td small {
+    font-size: 4.6pt;
+    color: #333;
+  }
+
+  .paper-block {
+    margin-bottom: 1.4mm;
+  }
+
+  .paper-block h3 {
+    margin: 0 0 0.4mm;
+    padding-bottom: 0.2mm;
+    border-bottom: 0.2mm solid #000;
+    font-family: var(--font-mono);
+    font-size: 5.8pt;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    break-after: avoid;
+  }
+
+  .paper-block dl {
+    margin: 0;
+  }
+
+  .paper-block dl > div {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 1.2mm;
+    break-inside: avoid;
+  }
+
+  .paper-block dt {
+    font-family: var(--font-mono);
+    white-space: nowrap;
+  }
+
+  .paper-block dt b {
+    font-weight: 700;
+  }
+
+  .paper-block dt small {
+    font-size: 4.8pt;
+    color: #333;
+  }
+
+  /* Sangría para que una operación que no cabe en la línea de su sintaxis no parezca otra
+     entrada. */
+  .paper-block dd {
+    margin: 0 0 0 auto;
+    padding-left: 2ch;
+    font-family: var(--font-mono);
+    color: #333;
+    text-align: left;
+  }
+
+  /* Lo que es prosa (qué hace una directiva, una ecall o un registro) en letra normal; las
+     operaciones y expansiones, que son código, en mono. */
+  .paper-block[data-kind='directives'] dd,
+  .paper-block[data-kind='syscalls'] dd,
+  .paper-block[data-kind='registers'] dd {
+    font-family: var(--font-sans);
+  }
+}

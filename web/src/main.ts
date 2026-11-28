@@ -181,6 +181,8 @@ function findControls(): Controls {
       drawer: element('#cheatsheet', HTMLElement),
       title: element('#cheatsheet-title', HTMLElement),
       close: element('#cheatsheet-close', HTMLButtonElement),
+      print: element('#cheatsheet-print', HTMLButtonElement),
+      paper: element('#cheatsheet-paper', HTMLElement),
       nav: element('#cheatsheet-nav', HTMLElement),
       search: element('#cheatsheet-search', HTMLInputElement),
       searchStatus: element('#cheatsheet-search-status', HTMLElement),

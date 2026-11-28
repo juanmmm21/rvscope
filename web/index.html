@@ -202,7 +202,15 @@
     <aside id="cheatsheet" class="cheatsheet" aria-labelledby="cheatsheet-title" hidden>
       <div class="cheatsheet-head">
         <h2 class="label" id="cheatsheet-title" tabindex="-1">Chuleta de RISC-V · RV32IM</h2>
-        <button type="button" id="cheatsheet-close" aria-keyshortcuts="Escape">Cerrar</button>
+        <div class="cheatsheet-actions">
+          <button type="button" id="cheatsheet-print" aria-describedby="cheatsheet-print-note">
+            Imprimir
+          </button>
+          <button type="button" id="cheatsheet-close" aria-keyshortcuts="Escape">Cerrar</button>
+        </div>
+        <p id="cheatsheet-print-note" class="visually-hidden">
+          Saca la chuleta entera en una hoja A4, en blanco y negro.
+        </p>
       </div>
       <div class="cheatsheet-search" role="search">
         <label class="label" for="cheatsheet-search">Buscar</label>
@@ -226,6 +234,7 @@
         aria-label="Instrucciones, directivas, ecalls y registros"
       ></div>
     </aside>
+    <div id="cheatsheet-paper" class="paper"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
