@@ -198,6 +198,20 @@
         </div>
         <p id="pipeline-caption" class="datapath-caption" aria-live="off"></p>
       </section>
+      <section id="cache" class="panel cache" aria-labelledby="cache-title">
+        <div class="panel-head">
+          <h2 class="label" id="cache-title">Caché</h2>
+          <p class="datapath-legend label">
+            <span class="cache-sample" data-recent="hit">acierto</span> ·
+            <span class="cache-sample" data-recent="miss">fallo</span> en el último paso · S sucia
+          </p>
+        </div>
+        <p class="cache-note">
+          La caché mide: cuenta los aciertos y fallos de lo que ejecuta el programa, pero no cambia
+          los ciclos ni el resultado. Cambiar su configuración vuelve a empezar el programa.
+        </p>
+        <div id="cache-body" class="cache-body"></div>
+      </section>
     </main>
     <aside id="cheatsheet" class="cheatsheet" aria-labelledby="cheatsheet-title" hidden>
       <div class="cheatsheet-head">

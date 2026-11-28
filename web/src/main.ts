@@ -3,6 +3,8 @@ import factorialSource from '../../examples/factorial.s?raw';
 import {
   loadCore,
   type AssembleReport,
+  type CacheKind,
+  type CacheSettings,
   type Core,
   type Label,
   type Machine,
@@ -14,6 +16,7 @@ import {
 import { CheatSheetPanel, type CheatSheetElements } from './cheatsheet/panel';
 import { DatapathPanel, type DatapathElements } from './datapath/panel';
 import { PipelineTablePanel, type PipelineTableElements } from './pipeline/panel';
+import { CachePanel, type CacheElements } from './cache/panel';
 import { createEditor, type SourceEditor } from './editor/editor';
 import { referenceIndex } from './editor/reference';
 import { MemoryPanel, RegisterPanel, radioGroup, type MemoryElements } from './inspect/panels';
@@ -131,6 +134,7 @@ interface Controls {
   readonly assemblyStatus: HTMLElement;
   readonly datapath: DatapathElements;
   readonly pipeline: PipelineTableElements;
+  readonly cache: CacheElements;
   readonly cheatSheet: CheatSheetElements;
 }
 
@@ -176,6 +180,10 @@ function findControls(): Controls {
       table: element('#pipeline-table', HTMLTableElement),
       caption: element('#pipeline-caption', HTMLElement),
     },
+    cache: {
+      section: element('#cache', HTMLElement),
+      body: element('#cache-body', HTMLElement),
+    },
     cheatSheet: {
       toggle: element('#cheatsheet-toggle', HTMLButtonElement),
       drawer: element('#cheatsheet', HTMLElement),
@@ -201,6 +209,7 @@ class Workbench {
   readonly #memory: MemoryPanel;
   readonly #datapath: DatapathPanel;
   readonly #pipeline: PipelineTablePanel;
+  readonly #cache: CachePanel;
   readonly #cheatSheet: CheatSheetPanel;
   // Etiquetas del último ensamblado correcto, para «Ir a» en la memoria.
   #labels: readonly Label[] = [];
@@ -224,6 +233,14 @@ class Workbench {
     );
     this.#datapath = new DatapathPanel(this.#ui.datapath, core.registers);
     this.#pipeline = new PipelineTablePanel(this.#ui.pipeline, core.registers);
+    this.#cache = new CachePanel(
+      this.#ui.cache,
+      core.cacheOptions,
+      (kind, settings) => this.#configureCache(kind, settings),
+      (error) => {
+        this.#fail(error);
+      },
+    );
     this.#cheatSheet = new CheatSheetPanel(this.#ui.cheatSheet, core.cheatSheet);
     this.#memory = new MemoryPanel(this.#ui.memory, (error) => {
       this.#fail(error);
@@ -339,6 +356,21 @@ class Workbench {
     storeModel(id);
     this.#showModel();
     this.#render();
+  }
+
+  // Lo medido con otra configuración no vale: el núcleo reinicia el programa al cambiarla.
+  #configureCache(kind: CacheKind, settings: CacheSettings | null): boolean {
+    this.#runner.stop();
+    this.#resumeAfterInput = false;
+    this.#breakpointLine = null;
+    try {
+      this.#machine.setCache(kind, settings);
+    } catch (error: unknown) {
+      this.#fail(error);
+      return false;
+    }
+    this.#render();
+    return true;
   }
 
   #bind(): void {
@@ -594,6 +626,7 @@ class Workbench {
       this.#registers.render(null);
       this.#memory.clear();
       this.#renderDatapath(null);
+      this.#cache.render(null);
       return;
     }
     let snapshot: Snapshot;
@@ -619,6 +652,7 @@ class Workbench {
 
     this.#registers.render(snapshot);
     this.#renderDatapath(snapshot);
+    this.#cache.render(() => this.#machine.caches());
     this.#memory.render(snapshot, {
       labels: this.#labels,
       registers: this.#core.registers,

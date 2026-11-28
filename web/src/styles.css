@@ -1025,6 +1025,299 @@ kbd {
   line-height: 1.1;
 }
 
+/* Caché: formulario en una fila, resumen (dirección, último paso, contadores y gráfico) y la
+   tabla de conjuntos. El pistacho marca solo la línea que tocó el último paso: continuo si
+   acertó, discontinuo si falló y se cargó. */
+.cache {
+  grid-column: 1 / -1;
+}
+
+.cache-note {
+  margin: 0 0 0.75rem;
+  max-width: 60rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.cache-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 34rem), 1fr));
+  gap: 1.5rem;
+}
+
+.cache-block {
+  min-width: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 0.75rem;
+}
+
+.cache-block-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.cache-block h3,
+.cache-block h4 {
+  margin: 0 0 0.5rem;
+  font-weight: 400;
+}
+
+.cache-block h3 {
+  color: var(--fg);
+}
+
+.cache-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.cache-field {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.cache-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+
+.cache-block[data-enabled='false'] .cache-form {
+  opacity: 0.75;
+}
+
+.cache-geometry {
+  margin: 0 0 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.cache-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1rem 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.cache-address {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 2px;
+  font-family: var(--font-mono);
+}
+
+.cache-address-field {
+  display: grid;
+  align-content: start;
+  flex-basis: 9.5rem;
+  min-width: 0;
+  padding: 0.35rem 0.5rem;
+  background: var(--surface);
+}
+
+.cache-address-field[data-empty='true'] {
+  background: none;
+  border: 1px dashed var(--line-strong);
+}
+
+.cache-address-bits {
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+.cache-address-value {
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.cache-recent-box {
+  grid-column: 1 / -1;
+}
+
+.cache-recent {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.cache-recent li + li {
+  margin-top: 0.25rem;
+}
+
+.cache-recent-none {
+  color: var(--muted);
+}
+
+.cache-counters {
+  display: grid;
+  grid-template-columns: auto auto;
+  justify-content: start;
+  align-content: start;
+  gap: 0.1rem 1rem;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.cache-counters dd {
+  margin: 0;
+  text-align: right;
+}
+
+.cache-chart {
+  margin: 0;
+  min-width: 0;
+}
+
+.cache-chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 28rem;
+  touch-action: none;
+}
+
+.cache-grid {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.cache-tick {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  fill: var(--muted);
+}
+
+.cache-line {
+  fill: none;
+  stroke: var(--fg);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+
+.cache-dot {
+  fill: var(--accent);
+  stroke: var(--bg);
+  stroke-width: 1.5;
+}
+
+.cache-cursor {
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
+}
+
+.cache-readout {
+  min-height: 1.2em;
+  margin: 0.2rem 0 0;
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+
+.cache-sets-scroll {
+  overflow: auto;
+  max-height: 22rem;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.cache-sets-scroll:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.cache-sets {
+  border-collapse: separate;
+  border-spacing: 2px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+}
+
+.cache-sets th {
+  position: sticky;
+  background: var(--bg);
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.cache-sets thead th {
+  top: 0;
+  z-index: 1;
+  padding: 0.3rem 0.4rem;
+  text-align: left;
+}
+
+.cache-sets tbody th {
+  left: 0;
+  padding: 0 0.6rem 0 0;
+  text-align: right;
+}
+
+.cache-sets thead th:first-child {
+  left: 0;
+  z-index: 2;
+}
+
+.cache-sets tbody tr[data-recent] th {
+  color: var(--accent);
+}
+
+.cache-sets td {
+  min-width: 7.5rem;
+  padding: 0.2rem 0.4rem;
+  vertical-align: top;
+  color: var(--muted);
+}
+
+.cache-sets td[data-valid='true'] {
+  background: var(--surface);
+  color: var(--fg);
+}
+
+.cache-sets td[data-recent='hit'],
+.cache-sample[data-recent='hit'] {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.cache-sets td[data-recent='miss'],
+.cache-sample[data-recent='miss'] {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+
+.cache-sample {
+  padding: 0 0.3rem;
+  font-family: var(--font-mono);
+}
+
+.cache-tag,
+.cache-line-address,
+.cache-age {
+  display: block;
+}
+
+.cache-line-address,
+.cache-age {
+  font-size: 0.65rem;
+  color: var(--muted);
+}
+
+@media (max-width: 40rem) {
+  .cache-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dp-wire polyline,
   .dp-unit rect,
