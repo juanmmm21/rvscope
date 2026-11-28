@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde_wasm_bindgen::Serializer;
 use wasm_bindgen::prelude::{JsError, JsValue, wasm_bindgen};
 
-use crate::session::Session;
+use crate::session::{CacheKind, CacheSettings, Session};
 
 /// Versión del núcleo, para que la interfaz compruebe que ha cargado el wasm correcto.
 #[wasm_bindgen]
@@ -45,6 +45,12 @@ pub fn vocabulary() -> Result<JsValue, JsError> {
 #[wasm_bindgen(js_name = cheatSheet)]
 pub fn cheat_sheet() -> Result<JsValue, JsError> {
     to_js(&cheatsheet::cheat_sheet())
+}
+
+/// Límites y políticas para configurar las cachés (`CacheOptions`).
+#[wasm_bindgen(js_name = cacheOptions)]
+pub fn cache_options() -> Result<JsValue, JsError> {
+    to_js(&Session::cache_options())
 }
 
 /// `None` se convierte en `null` y los mapas en objetos planos, como en JSON: así los tipos
@@ -156,5 +162,23 @@ impl Simulator {
     pub fn pipeline_table(&self) -> Result<JsValue, JsError> {
         let table = self.session.pipeline_table().map_err(js_error)?;
         to_js(&table)
+    }
+
+    /// Configura la caché `kind` (`"instruction"` o `"data"`) con un `CacheSettings`, o la
+    /// quita con `null`. Vuelve a empezar el programa cargado.
+    #[wasm_bindgen(js_name = setCache)]
+    pub fn set_cache(&mut self, kind: &str, settings: JsValue) -> Result<(), JsError> {
+        let kind = CacheKind::from_id(kind)
+            .ok_or_else(|| JsError::new(&format!("no hay una caché «{kind}»")))?;
+        let settings: Option<CacheSettings> = serde_wasm_bindgen::from_value(settings)
+            .map_err(|error| JsError::new(&error.to_string()))?;
+        self.session.set_cache(kind, settings).map_err(js_error)
+    }
+
+    /// Contenido, contadores e historial de las cachés (`CachesView`); aparte de `snapshot`
+    /// porque solo hace falta con su panel a la vista.
+    pub fn caches(&self) -> Result<JsValue, JsError> {
+        let caches = self.session.caches().map_err(js_error)?;
+        to_js(&caches)
     }
 }

@@ -1,5 +1,6 @@
 import init, {
   Simulator,
+  cacheOptions,
   cheatSheet,
   models,
   registers,
@@ -339,6 +340,90 @@ export interface Region {
   };
 }
 
+export type CacheKind = 'instruction' | 'data';
+
+// Configuración de una caché; `replacement` y `write_policy` son ids de `CacheOptions`.
+export interface CacheSettings {
+  readonly sets: number;
+  readonly ways: number;
+  readonly line_bytes: number;
+  readonly replacement: string;
+  readonly write_policy: string;
+  readonly write_allocate: boolean;
+}
+
+export interface CacheChoice {
+  readonly id: string;
+  readonly label: string;
+}
+
+export interface CacheOptions {
+  readonly max_sets: number;
+  readonly max_ways: number;
+  readonly min_line_bytes: number;
+  readonly max_line_bytes: number;
+  readonly replacements: readonly CacheChoice[];
+  readonly write_policies: readonly CacheChoice[];
+  readonly default: CacheSettings;
+}
+
+export interface CacheStats {
+  readonly reads: number;
+  readonly read_hits: number;
+  readonly writes: number;
+  readonly write_hits: number;
+  readonly evictions: number;
+  readonly writebacks: number;
+  readonly memory_writes: number;
+  readonly uncached: number;
+}
+
+export interface HistoryPoint {
+  readonly accesses: number;
+  readonly hits: number;
+}
+
+export interface CacheAccess {
+  readonly op: 'read' | 'write';
+  readonly address: number;
+  readonly tag: number;
+  readonly set: number;
+  readonly way: number | null;
+  readonly hit: boolean;
+  readonly eviction: {
+    readonly tag: number;
+    readonly address: number;
+    readonly dirty: boolean;
+  } | null;
+}
+
+export interface CacheLine {
+  readonly valid: boolean;
+  readonly dirty: boolean;
+  readonly tag: number;
+  readonly address: number | null;
+  // 0 es la siguiente en irse; `null` con reemplazo aleatorio o vía vacía.
+  readonly age: number | null;
+}
+
+export interface CacheView {
+  readonly settings: CacheSettings;
+  readonly size_bytes: number;
+  readonly tag_bits: number;
+  readonly index_bits: number;
+  readonly offset_bits: number;
+  readonly stats: CacheStats;
+  readonly hit_rate: number | null;
+  readonly history: readonly HistoryPoint[];
+  readonly sets: readonly (readonly CacheLine[])[];
+  readonly recent: readonly CacheAccess[];
+}
+
+export interface CachesView {
+  readonly instruction: CacheView | null;
+  readonly data: CacheView | null;
+}
+
 // Envoltorio tipado del `Simulator` del wasm: la web solo habla con el núcleo a través de él.
 export class Machine {
   readonly #simulator = new Simulator();
@@ -398,6 +483,15 @@ export class Machine {
   pipelineTable(): PipelineTable {
     return this.#simulator.pipelineTable() as PipelineTable;
   }
+
+  // Cambiar una caché vuelve a empezar el programa cargado; `null` la quita.
+  setCache(kind: CacheKind, settings: CacheSettings | null): void {
+    this.#simulator.setCache(kind, settings);
+  }
+
+  caches(): CachesView {
+    return this.#simulator.caches() as CachesView;
+  }
 }
 
 export interface Core {
@@ -406,6 +500,7 @@ export interface Core {
   readonly registers: readonly RegisterInfo[];
   readonly vocabulary: Vocabulary;
   readonly cheatSheet: CheatSheet;
+  readonly cacheOptions: CacheOptions;
   createMachine(): Machine;
 }
 
@@ -419,6 +514,7 @@ export function loadCore(): Promise<Core> {
     registers: registers() as RegisterInfo[],
     vocabulary: vocabulary() as Vocabulary,
     cheatSheet: cheatSheet() as CheatSheet,
+    cacheOptions: cacheOptions() as CacheOptions,
     createMachine: () => new Machine(),
   }));
   return ready;
