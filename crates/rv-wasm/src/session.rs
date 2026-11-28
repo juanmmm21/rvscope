@@ -9,11 +9,13 @@
 
 use rv_asm::{AsmError, DIRECTIVES, MODIFIERS, Program};
 use rv_core::{
-    DataAccess, Halt, Machine, MapError, Model, PipelineTrace, PipelineView, Processor, Region,
-    RegisterWrite, Retired, SlotState, Stage, Stats, TraceCell, Trap,
+    Cache, CacheAccess, CacheConfig, CacheConfigError, CacheStats, CacheSystem, DataAccess, Halt,
+    HistoryPoint, MAX_LINE_BYTES, MAX_SETS, MAX_WAYS, MIN_LINE_BYTES, Machine, MapError, Model,
+    PipelineTrace, PipelineView, Processor, Region, RegisterWrite, Replacement, Retired, SlotState,
+    Stage, Stats, TraceCell, Trap, WritePolicy,
 };
 use rv_isa::{INSTRUCTIONS, Instruction, PSEUDO_INSTRUCTIONS, Reg, RegisterStyle};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Copias que se guardan como mucho, además de la inicial. Al pasarse se descarta una de cada
@@ -38,6 +40,10 @@ pub enum SessionError {
     ReadTooLarge(u32),
     #[error(transparent)]
     Map(#[from] MapError),
+    #[error("caché: {0}")]
+    Cache(#[from] CacheConfigError),
+    #[error("caché: no hay una opción «{0}»")]
+    UnknownCacheOption(String),
 }
 
 /// Resultado de ensamblar: el listado si ha ido bien o todos los errores con su posición.
@@ -239,6 +245,116 @@ pub struct TableRow {
     pub cells: Vec<TraceCell>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheKind {
+    Instruction,
+    Data,
+}
+
+impl CacheKind {
+    pub fn from_id(id: &str) -> Option<CacheKind> {
+        match id {
+            "instruction" => Some(CacheKind::Instruction),
+            "data" => Some(CacheKind::Data),
+            _ => None,
+        }
+    }
+}
+
+/// Configuración de una caché tal como la manda y la recibe la interfaz, con las políticas
+/// por su identificador.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheSettings {
+    pub sets: u32,
+    pub ways: u32,
+    pub line_bytes: u32,
+    pub replacement: String,
+    pub write_policy: String,
+    pub write_allocate: bool,
+}
+
+impl From<&CacheConfig> for CacheSettings {
+    fn from(config: &CacheConfig) -> CacheSettings {
+        CacheSettings {
+            sets: config.sets,
+            ways: config.ways,
+            line_bytes: config.line_bytes,
+            replacement: config.replacement.id().to_owned(),
+            write_policy: config.write_policy.id().to_owned(),
+            write_allocate: config.write_allocate,
+        }
+    }
+}
+
+impl CacheSettings {
+    pub fn to_config(&self) -> Result<CacheConfig, SessionError> {
+        let unknown = |id: &str| SessionError::UnknownCacheOption(id.to_owned());
+        Ok(CacheConfig {
+            sets: self.sets,
+            ways: self.ways,
+            line_bytes: self.line_bytes,
+            replacement: Replacement::from_id(&self.replacement)
+                .ok_or_else(|| unknown(&self.replacement))?,
+            write_policy: WritePolicy::from_id(&self.write_policy)
+                .ok_or_else(|| unknown(&self.write_policy))?,
+            write_allocate: self.write_allocate,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct CacheChoice {
+    pub id: &'static str,
+    pub label: &'static str,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CacheOptions {
+    pub max_sets: u32,
+    pub max_ways: u32,
+    pub min_line_bytes: u32,
+    pub max_line_bytes: u32,
+    pub replacements: Vec<CacheChoice>,
+    pub write_policies: Vec<CacheChoice>,
+    pub default: CacheSettings,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct CachesView {
+    pub instruction: Option<CacheView>,
+    pub data: Option<CacheView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct CacheView {
+    pub settings: CacheSettings,
+    pub size_bytes: u32,
+    pub tag_bits: u32,
+    pub index_bits: u32,
+    pub offset_bits: u32,
+    pub stats: CacheStats,
+    pub hit_rate: Option<f64>,
+    /// Puntos del gráfico de aciertos, acabando siempre en los totales actuales.
+    pub history: Vec<HistoryPoint>,
+    /// Conjunto a conjunto, sus vías.
+    pub sets: Vec<Vec<LineView>>,
+    /// Accesos del último paso, para resaltar las líneas tocadas.
+    pub recent: Vec<CacheAccess>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct LineView {
+    pub valid: bool,
+    pub dirty: bool,
+    pub tag: u32,
+    /// Primer byte de la línea guardada; `None` si la vía está vacía.
+    pub address: Option<u32>,
+    /// Orden de expulsión entre las válidas del conjunto: 0 es la que antes se iría (la menos
+    /// usada en LRU, la más antigua en FIFO). `None` con reemplazo aleatorio o vía vacía.
+    pub age: Option<u32>,
+}
+
 /// Entrada que el usuario dio a la consola tras `at` pasos efectivos.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct InputEvent {
@@ -259,6 +375,7 @@ struct Checkpoint {
     steps: u64,
     inputs: usize,
     machine: Machine,
+    caches: CacheSystem,
 }
 
 /// Programa cargado en una máquina, con su historia.
@@ -266,6 +383,8 @@ struct Checkpoint {
 struct Loaded {
     program: Program,
     machine: Machine,
+    /// Cachés que miden lo retirado (ADR 0004); viajan en cada copia junto a la máquina.
+    caches: CacheSystem,
     /// Pasos que han hecho algo: los de espera de entrada y los dados ya parado no cuentan.
     steps: u64,
     inputs: Vec<InputEvent>,
@@ -278,16 +397,18 @@ struct Loaded {
 }
 
 impl Loaded {
-    fn new(program: Program, model: Model) -> Result<Loaded, MapError> {
+    fn new(program: Program, model: Model, caches: CacheSystem) -> Result<Loaded, MapError> {
         let machine = model.boot(&program)?;
         Ok(Loaded {
             checkpoints: vec![Checkpoint {
                 steps: 0,
                 inputs: 0,
                 machine: machine.clone(),
+                caches: caches.clone(),
             }],
             program,
             machine,
+            caches,
             steps: 0,
             inputs: Vec::new(),
             interval: INITIAL_INTERVAL,
@@ -308,6 +429,7 @@ impl Loaded {
         if self.awaiting {
             return StepOutcome::AwaitingInput;
         }
+        self.caches.observe(&retired);
         self.last_retired = retired;
         self.steps += 1;
         self.trace.record(self.steps, self.machine.view());
@@ -322,6 +444,7 @@ impl Loaded {
             steps: self.steps,
             inputs: self.inputs.len(),
             machine: self.machine.clone(),
+            caches: self.caches.clone(),
         });
         if self.checkpoints.len() > MAX_CHECKPOINTS + 1 {
             self.interval *= 2;
@@ -357,18 +480,21 @@ impl Loaded {
             event.at = event.at.min(target);
         }
         let mut machine = checkpoint.machine;
+        let mut caches = checkpoint.caches;
         let mut next_input = checkpoint.inputs;
         let mut last_retired = Vec::new();
         let mut trace = PipelineTrace::new(TRACE_WINDOW);
         for steps in checkpoint.steps..target {
             next_input = self.apply_inputs(&mut machine, next_input, steps);
             last_retired = machine.step();
+            caches.observe(&last_retired);
             if steps >= earliest {
                 trace.record(steps + 1, machine.view());
             }
         }
         self.apply_inputs(&mut machine, next_input, target);
         self.machine = machine;
+        self.caches = caches;
         self.last_retired = last_retired;
         self.trace = trace;
         self.steps = target;
@@ -432,6 +558,8 @@ pub struct Session {
     model: Model,
     loaded: Option<Loaded>,
     breakpoints: Vec<u32>,
+    /// Cachés configuradas, vacías: cada programa cargado empieza con una copia.
+    caches: CacheSystem,
 }
 
 impl Default for Session {
@@ -446,6 +574,7 @@ impl Session {
             model: Model::SingleCycle,
             loaded: None,
             breakpoints: Vec::new(),
+            caches: CacheSystem::default(),
         }
     }
 
@@ -522,7 +651,7 @@ impl Session {
                 })
                 .collect(),
         };
-        self.loaded = Some(Loaded::new(program, self.model)?);
+        self.loaded = Some(Loaded::new(program, self.model, self.caches.clone())?);
         Ok(report)
     }
 
@@ -531,7 +660,7 @@ impl Session {
         let model = Model::from_id(id).ok_or_else(|| SessionError::UnknownModel(id.to_owned()))?;
         self.model = model;
         if let Some(loaded) = self.loaded.take() {
-            self.loaded = Some(Loaded::new(loaded.program, model)?);
+            self.loaded = Some(Loaded::new(loaded.program, model, self.caches.clone())?);
         }
         Ok(())
     }
@@ -539,7 +668,11 @@ impl Session {
     /// Vuelve al principio del programa, sin entrada.
     pub fn reset(&mut self) -> Result<(), SessionError> {
         let loaded = self.loaded.take().ok_or(SessionError::NotAssembled)?;
-        self.loaded = Some(Loaded::new(loaded.program, self.model)?);
+        self.loaded = Some(Loaded::new(
+            loaded.program,
+            self.model,
+            self.caches.clone(),
+        )?);
         Ok(())
     }
 
@@ -672,6 +805,70 @@ impl Session {
         })
     }
 
+    /// Límites y opciones para el formulario de configuración de las cachés.
+    pub fn cache_options() -> CacheOptions {
+        let default = CacheConfig::default();
+        CacheOptions {
+            max_sets: MAX_SETS,
+            max_ways: MAX_WAYS,
+            min_line_bytes: MIN_LINE_BYTES,
+            max_line_bytes: MAX_LINE_BYTES,
+            replacements: Replacement::ALL
+                .into_iter()
+                .map(|replacement| CacheChoice {
+                    id: replacement.id(),
+                    label: replacement_label(replacement),
+                })
+                .collect(),
+            write_policies: WritePolicy::ALL
+                .into_iter()
+                .map(|policy| CacheChoice {
+                    id: policy.id(),
+                    label: write_policy_label(policy),
+                })
+                .collect(),
+            default: CacheSettings::from(&default),
+        }
+    }
+
+    /// Pone, cambia o quita (`None`) una caché y vuelve a empezar el programa cargado: lo
+    /// medido con la configuración anterior ya no vale para la nueva.
+    pub fn set_cache(
+        &mut self,
+        kind: CacheKind,
+        settings: Option<CacheSettings>,
+    ) -> Result<(), SessionError> {
+        let cache = settings
+            .map(|settings| {
+                settings
+                    .to_config()
+                    .and_then(|config| Ok(Cache::new(config)?))
+            })
+            .transpose()?;
+        match kind {
+            CacheKind::Instruction => self.caches.instruction = cache,
+            CacheKind::Data => self.caches.data = cache,
+        }
+        if let Some(loaded) = self.loaded.take() {
+            self.loaded = Some(Loaded::new(
+                loaded.program,
+                self.model,
+                self.caches.clone(),
+            )?);
+        }
+        Ok(())
+    }
+
+    /// Contenido y contadores de las cachés; aparte de `snapshot` porque con muchas líneas
+    /// pesa y solo hace falta con su panel a la vista.
+    pub fn caches(&self) -> Result<CachesView, SessionError> {
+        let caches = &self.loaded()?.caches;
+        Ok(CachesView {
+            instruction: caches.instruction.as_ref().map(cache_view),
+            data: caches.data.as_ref().map(cache_view),
+        })
+    }
+
     fn loaded(&self) -> Result<&Loaded, SessionError> {
         self.loaded.as_ref().ok_or(SessionError::NotAssembled)
     }
@@ -679,6 +876,80 @@ impl Session {
     fn loaded_mut(&mut self) -> Result<&mut Loaded, SessionError> {
         self.loaded.as_mut().ok_or(SessionError::NotAssembled)
     }
+}
+
+fn replacement_label(replacement: Replacement) -> &'static str {
+    match replacement {
+        Replacement::Lru => "LRU (la menos usada)",
+        Replacement::Fifo => "FIFO (la más antigua)",
+        Replacement::Random => "Aleatoria",
+    }
+}
+
+fn write_policy_label(policy: WritePolicy) -> &'static str {
+    match policy {
+        WritePolicy::WriteBack => "Write-back",
+        WritePolicy::WriteThrough => "Write-through",
+    }
+}
+
+fn cache_view(cache: &Cache) -> CacheView {
+    let config = cache.config();
+    let stats = *cache.stats();
+    let mut history = cache.history().points.clone();
+    if history.last().map(|point| point.accesses) != Some(stats.accesses()) && stats.accesses() > 0
+    {
+        history.push(HistoryPoint {
+            accesses: stats.accesses(),
+            hits: stats.hits(),
+        });
+    }
+    let sets = (0..config.sets)
+        .map(|set| {
+            let lines = cache.set(set);
+            lines
+                .iter()
+                .map(|line| LineView {
+                    valid: line.valid,
+                    dirty: line.dirty,
+                    tag: line.tag,
+                    address: line.valid.then(|| config.line_address(line.tag, set)),
+                    age: eviction_age(config.replacement, lines, line),
+                })
+                .collect()
+        })
+        .collect();
+    CacheView {
+        settings: CacheSettings::from(config),
+        size_bytes: config.size_bytes(),
+        tag_bits: 32 - config.index_bits() - config.offset_bits(),
+        index_bits: config.index_bits(),
+        offset_bits: config.offset_bits(),
+        stats,
+        hit_rate: stats.hit_rate(),
+        history,
+        sets,
+        recent: cache.recent().to_vec(),
+    }
+}
+
+fn eviction_age(
+    replacement: Replacement,
+    lines: &[rv_core::Line],
+    line: &rv_core::Line,
+) -> Option<u32> {
+    let stamp = match replacement {
+        Replacement::Lru => |line: &rv_core::Line| line.last_used,
+        Replacement::Fifo => |line: &rv_core::Line| line.filled_at,
+        Replacement::Random => return None,
+    };
+    line.valid.then(|| {
+        let older = lines
+            .iter()
+            .filter(|other| other.valid && stamp(other) < stamp(line))
+            .count();
+        u32::try_from(older).unwrap_or(u32::MAX)
+    })
 }
 
 fn halt_view(program: &Program, halt: Halt) -> HaltView {
