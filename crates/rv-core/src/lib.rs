@@ -1,5 +1,6 @@
 //! Memoria, modelos de procesador y llamadas al sistema de rvscope.
 
+mod cache;
 mod dual_issue;
 mod exec;
 mod five_stage;
@@ -15,6 +16,11 @@ mod trace;
 mod view;
 mod wires;
 
+pub use cache::{
+    Cache, CacheAccess, CacheConfig, CacheConfigError, CacheOp, CacheStats, CacheSystem, Eviction,
+    HistoryPoint, HitHistory, Line, MAX_HISTORY_POINTS, MAX_LINE_BYTES, MAX_SETS, MAX_WAYS,
+    MIN_LINE_BYTES, Replacement, WritePolicy,
+};
 pub use dual_issue::DualIssue;
 pub use exec::{AluOp, AluSource, BranchCond, LoadOp, Operation};
 pub use five_stage::{FiveStage, Hazards};
